@@ -1,0 +1,8 @@
+.gitlab-ci.yml
+.phpunit.result.cache
+/.cache/
+/.makefiles/
+/var/
+/vendor/
+grumphp.yml
+README.md
