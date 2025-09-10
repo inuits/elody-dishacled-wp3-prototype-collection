@@ -1,4 +1,4 @@
-from apps.dishacled-wp3-prototype.resources.base_resource import DishacledBaseResource
+from apps.dishacled.resources.base_resource import DishacledBaseResource
 from flask import Blueprint, request
 from flask_restful import Api
 from inuits_policy_based_auth import RequestContext

@@ -1,4 +1,4 @@
-from apps.dishacled-wp3-prototype.resources.base_resource import DishacledBaseResource
+from apps.dishacled.resources.base_resource import DishacledBaseResource
 from elody.policies.authentication.base_user_tenant_validation_policy import (
     BaseUserTenantValidationPolicy,
 )

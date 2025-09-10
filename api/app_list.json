@@ -1,7 +1,7 @@
 {
   "dishacled": {
-    "name": "dishacled-wp3-prototype",
-    "description": "dishacled-wp3-prototype specific extensions",
+    "name": "dishacled",
+    "description": "dishacled specific extensions",
     "version": 0.1,
     "author": "Inuits",
     "author_email": "developers@inuits.eu",
