@@ -3,7 +3,7 @@ ADMIN = {
         "create": {
             "tenant": {},
             "user": {},
-            "orchestrator": {},
+            "pipeline": {},
             "runner": {},
             "channel": {},
             "processor": {},
@@ -12,7 +12,7 @@ ADMIN = {
         "read": {
             "tenant": {},
             "user": {},
-            "orchestrator": {},
+            "pipeline": {},
             "runner": {},
             "channel": {},
             "processor": {},
@@ -21,7 +21,7 @@ ADMIN = {
         "update": {
             "tenant": {},
             "user": {},
-            "orchestrator": {},
+            "pipeline": {},
             "runner": {},
             "channel": {},
             "processor": {},
@@ -30,7 +30,7 @@ ADMIN = {
         "delete": {
             "tenant": {},
             "user": {},
-            "orchestrator": {},
+            "pipeline": {},
             "runner": {},
             "channel": {},
             "processor": {},
