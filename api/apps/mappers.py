@@ -24,9 +24,7 @@ OBJECT_CONFIGURATION_MAPPER = {
 
 ROUTE_MAPPER = {
     "FilterEntities": "/entities/filter_deprecated",
-    "FilterMediafiles": "/mediafiles/filter_deprecated",
     "FilterEntitiesV2": "/entities/filter",
-    "FilterMediafilesV2": "/mediafiles/filter",
     "FilterGenericObjectsV2": "/<string:collection>/filter",
     "FilterGenericObjects": "/<string:collection>/filter_deprecated",
 }
