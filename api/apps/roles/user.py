@@ -3,7 +3,7 @@ USER = {
         "create": {
             "tenant": {},
             "user": {},
-            "orchestrator": {},
+            "pipeline": {},
             "runner": {},
             "channel": {},
             "processor": {},
@@ -12,7 +12,7 @@ USER = {
         "read": {
             "tenant": {},
             "user": {},
-            "orchestrator": {},
+            "pipeline": {},
             "runner": {},
             "channel": {},
             "processor": {},
@@ -21,7 +21,7 @@ USER = {
         "update": {
             "tenant": {},
             "user": {},
-            "orchestrator": {},
+            "pipeline": {},
             "runner": {},
             "channel": {},
             "processor": {},
@@ -30,7 +30,7 @@ USER = {
         "delete": {
             "tenant": {},
             "user": {},
-            "orchestrator": {},
+            "pipeline": {},
             "runner": {},
             "channel": {},
             "processor": {},
