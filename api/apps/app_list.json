@@ -13,7 +13,7 @@
         "token_based_policies.tenant_token_roles_policy",
         "user_tenant_validation_policy"
       ],
-      "authorization": ["all_allowed_policy", "mediafile_copyright_policy"]
+      "authorization": ["all_allowed_policy"]
     }
   }
 }
