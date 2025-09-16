@@ -45,7 +45,7 @@ class UserTenantValidationPolicy(
         )
 
     def _determine_tenant_id(self, request, user_context: UserContext):
-        return "tenant:super"
+        return ""
 
     def __group_roles_from_idp_per_tenant(self, user_context: UserContext):
         roles_per_tenant = {"global": ["super_admin"]}
