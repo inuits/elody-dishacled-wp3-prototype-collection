@@ -37,3 +37,5 @@ STORAGE_MAPPER = {
 }
 
 COLLECTION_MAPPER = {"tickets": "abstracts"}
+
+FEATURES = {}
