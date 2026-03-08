@@ -23,10 +23,12 @@ OBJECT_CONFIGURATION_MAPPER = {
 }
 
 ROUTE_MAPPER = {
-    "FilterEntities": "/entities/filter_deprecated",
-    "FilterEntitiesV2": "/entities/filter",
+    "FilterGenericObjects": "/deprecated/v1/<string:collection>/filter",
     "FilterGenericObjectsV2": "/<string:collection>/filter",
-    "FilterGenericObjects": "/<string:collection>/filter_deprecated",
+    "GenericObject": "/deprecated/v1/<string:collection>",
+    "GenericObjectDetail": "/deprecated/v1/<string:collection>/<string:id>",
+    "GenericObjectDetailV2": "/deprecated/v2/<string:collection>/<string:id>",
+    "GenericObjectV2": "/deprecated/v2/<string:collection>",
 }
 
 STORAGE_MAPPER = {
@@ -38,4 +40,4 @@ STORAGE_MAPPER = {
 
 COLLECTION_MAPPER = {"tickets": "abstracts"}
 
-FEATURES = {}
+FEATURES = {"specs": {"elody": {}}}
