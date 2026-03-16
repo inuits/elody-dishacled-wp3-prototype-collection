@@ -4,6 +4,7 @@ from flask_restful import Api
 from inuits_policy_based_auth import RequestContext
 from policy_factory import apply_policies
 from resources.entity import Entity, EntityMediafiles, EntityDetail
+from resources.generic_object import GenericObjectDetail
 
 api_bp = Blueprint("entity", __name__)
 api = Api(api_bp)
@@ -37,5 +38,15 @@ class DishacledEntityDetail(DishacledBaseResource, EntityDetail):
         return super().delete(id)
 
 
+class DishacledGithubProcessorDetail(DishacledBaseResource, GenericObjectDetail):
+    @apply_policies(RequestContext(request))
+    def get(self, id):
+        item = self.get_object_detail(collection="githubProcessors", id=id)
+        if not item:
+            return {"message": "Not found"}, 404
+        return item
+
+
 api.add_resource(DishacledEntity, "/entities")
 api.add_resource(DishacledEntityDetail, "/entities/<string:id>")
+api.add_resource(DishacledGithubProcessorDetail, "/githubProcessors/<string:id>")

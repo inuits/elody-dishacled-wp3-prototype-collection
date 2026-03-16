@@ -1,5 +1,6 @@
 import re as regex
 
+from configuration import get_object_configuration_mapper  # pyright: ignore
 from elody.policies.permission_handler import (
     get_permissions,
     handle_single_item_request,
@@ -31,10 +32,17 @@ class GenericObjectDetailPolicy(BaseAuthorizationPolicy):
         if not request.path.startswith("/ngsi-ld/v1/entities"):
             collection = request.path.split("/")[-2]
         id = view_args.get("id")
+
+        resolved_collection = view_args.get("collection", collection)
+        config = get_object_configuration_mapper().get(resolved_collection)
+        if config and config.crud().get("storage_type") == "http":
+            policy_context.access_verdict = True
+            return policy_context
+
         item = (
             StorageManager()
             .get_db_engine()
-            .get_item_from_collection_by_id(view_args.get("collection", collection), id)
+            .get_item_from_collection_by_id(resolved_collection, id)
         )
         if not item:
             abort(

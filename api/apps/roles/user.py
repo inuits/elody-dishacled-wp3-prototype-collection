@@ -6,7 +6,6 @@ USER = {
             "pipeline": {},
             "runner": {},
             "channel": {},
-            "processor": {},
             "savedSearch": {}
         },
         "read": {
@@ -15,7 +14,6 @@ USER = {
             "pipeline": {},
             "runner": {},
             "channel": {},
-            "processor": {},
             "savedSearch": {}
         },
         "update": {
@@ -24,7 +22,6 @@ USER = {
             "pipeline": {},
             "runner": {},
             "channel": {},
-            "processor": {},
             "savedSearch": {}
         },
         "delete": {
@@ -33,7 +30,6 @@ USER = {
             "pipeline": {},
             "runner": {},
             "channel": {},
-            "processor": {},
             "savedSearch": {}
         },
     },

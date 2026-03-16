@@ -6,7 +6,7 @@
     "author": "Inuits",
     "author_email": "developers@inuits.eu",
     "license": "Proprietary",
-    "resources": ["entity"],
+    "resources": ["entity", "shacl_codegen", "shacl_install"],
     "policies": {
       "authentication": [
         "token_based_policies.authlib_flask_oauth2_policy",
