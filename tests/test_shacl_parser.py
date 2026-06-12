@@ -216,7 +216,7 @@ class TestShaclParser:
         assert prop.is_required is False
         assert prop.name == "test"
 
-    def test_channel_class_maps_to_writer_field(self):
+    def test_channel_class_maps_to_channel_relation_field(self):
         ttl = """\
 @prefix rdfc: <https://w3id.org/rdf-connect#>.
 @prefix sh: <http://www.w3.org/ns/shacl#>.
@@ -233,4 +233,4 @@ class TestShaclParser:
         parser = ShaclParser()
         shapes = parser.parse(ttl)
         props = {p.name: p for p in shapes["TestProc"]}
-        assert props["out"].input_field_type == "hasWriterField"
+        assert props["out"].input_field_type == "channelRelationField"
