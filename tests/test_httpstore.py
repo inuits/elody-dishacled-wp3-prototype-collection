@@ -114,3 +114,44 @@ class TestDishacledHttpStorageManagerParseShacl:
 
         result = store._fetch_ttl_content(MOCK_REPO, "missing.ttl")
         assert result is None
+
+
+class TestGetItemIncludesRawTtl:
+    def test_get_item_from_collection_by_id_includes_raw_ttl(self):
+        store = DishacledHttpStorageManager()
+        encoded = base64.b64encode(EXAMPLE_TTL.encode("utf-8")).decode("utf-8")
+
+        repo_response = MagicMock()
+        repo_response.status_code = 200
+        repo_response.json.return_value = {
+            **MOCK_REPO,
+            "full_name": "rdfc/ldes-client",
+            "html_url": "https://github.com/rdfc/ldes-client",
+        }
+
+        tree_response = MagicMock()
+        tree_response.status_code = 200
+        tree_response.json.return_value = {
+            "tree": [{"path": "processor.ttl"}]
+        }
+
+        content_response = MagicMock()
+        content_response.status_code = 200
+        content_response.json.return_value = {
+            "content": encoded,
+            "encoding": "base64",
+        }
+
+        store.session = MagicMock()
+        store.session.get.side_effect = [
+            repo_response,
+            tree_response,
+            content_response,
+        ]
+
+        item = store.get_item_from_collection_by_id(
+            "githubProcessors", "rdfc--ldes-client"
+        )
+
+        assert item["data"]["rawTtl"] == EXAMPLE_TTL
+        assert len(item["data"]["properties"]) == 2

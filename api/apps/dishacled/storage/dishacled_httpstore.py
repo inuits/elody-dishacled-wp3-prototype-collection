@@ -134,9 +134,19 @@ class DishacledHttpStorageManager(HttpStorageManager):
             prepared["metadata"].append(
                 {"key": "shaclFiles", "value": ",".join(ttl_files)}
             )
-            properties = self._parse_shacl_properties(repo, ttl_files)
+            contents = [
+                content
+                for content in (
+                    self._fetch_ttl_content(repo, ttl_path) for ttl_path in ttl_files
+                )
+                if content
+            ]
+            properties = self._parse_shacl_contents(contents)
             if properties:
-                prepared["data"] = {"properties": properties}
+                prepared["data"] = {
+                    "properties": properties,
+                    "rawTtl": "\n".join(contents),
+                }
 
         return prepared
 
@@ -155,12 +165,19 @@ class DishacledHttpStorageManager(HttpStorageManager):
         return content
 
     def _parse_shacl_properties(self, repo, ttl_files):
+        contents = [
+            content
+            for content in (
+                self._fetch_ttl_content(repo, ttl_path) for ttl_path in ttl_files
+            )
+            if content
+        ]
+        return self._parse_shacl_contents(contents)
+
+    def _parse_shacl_contents(self, contents):
         parser = ShaclParser()
         all_properties = []
-        for ttl_path in ttl_files:
-            content = self._fetch_ttl_content(repo, ttl_path)
-            if not content:
-                continue
+        for content in contents:
             try:
                 shapes = parser.parse(content)
             except Exception:
