@@ -358,3 +358,54 @@ class TestEmptyPipeline:
 
 def graph_has_no_value(g, subject, predicate):
     return g.value(subject, predicate) is None
+
+
+MULTI_SHAPE_TTL = """\
+@prefix rdfc: <https://w3id.org/rdf-connect#>.
+@prefix sh: <http://www.w3.org/ns/shacl#>.
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#>.
+
+rdfc:HttpFetch rdfc:jsImplementationOf rdfc:Processor.
+
+[ ] a sh:NodeShape;
+  sh:targetClass rdfc:HttpFetchAuth;
+  sh:property [ sh:datatype xsd:string; sh:path rdfc:type; sh:name "type"; ].
+
+[ ] a sh:NodeShape;
+  sh:targetClass rdfc:HttpFetch;
+  sh:property [
+    sh:datatype xsd:string; sh:path rdfc:url; sh:name "url"; sh:minCount 1;
+  ], [
+    sh:class rdfc:Writer; sh:path rdfc:writer; sh:name "writer";
+  ].
+"""
+
+
+class TestMultiShapeProcessor:
+    def test_picks_processor_shape_not_aux_shape(self):
+        pipeline = make_pipeline(
+            [
+                {
+                    "key": "rdfc--http-utils-processor-ts",
+                    "type": "hasProcessor",
+                    "metadata": [
+                        {"key": "url", "value": "https://example.org/feed"},
+                        {"key": "writer", "value": "json"},
+                    ],
+                }
+            ]
+        )
+        processor = make_processor(
+            "rdfc--http-utils-processor-ts", "http-utils-processor-ts", "ts", MULTI_SHAPE_TTL
+        )
+        serializer = PipelineTtlSerializer(base_uri=BASE)
+        ttl = serializer.serialize(pipeline, {"rdfc--http-utils-processor-ts": processor})
+        g = Graph()
+        g.parse(data=ttl, format="turtle")
+        stage = URIRef(BASE + "http-utils-processor-ts")
+        # typed as the processor class, not the auxiliary HttpFetchAuth shape
+        assert (stage, RDF.type, RDFC.HttpFetch) in g
+        assert (stage, RDF.type, RDFC.HttpFetchAuth) not in g
+        # url + writer bound from the processor shape
+        assert g.value(stage, RDFC.url) == Literal("https://example.org/feed")
+        assert g.value(stage, RDFC.writer) == URIRef(BASE + "json")

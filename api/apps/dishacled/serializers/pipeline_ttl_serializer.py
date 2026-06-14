@@ -39,11 +39,21 @@ class _ShapeIndex:
         g = Graph()
         g.parse(data=raw_ttl, format="turtle")
 
+        # The processor class is the subject of a `rdfc:*ImplementationOf
+        # rdfc:Processor` triple (e.g. rdfc:HttpFetch). Prefer the NodeShape
+        # whose sh:targetClass is that class, so multi-shape processor files
+        # (HttpFetch + HttpFetchAuth + HttpFetchOptions) bind the right shape.
+        processor_classes = {
+            s
+            for s, p, o in g
+            if o == RDFC.Processor and str(p).split("#")[-1].endswith("ImplementationOf")
+        }
+
+        shapes = []
         for node_shape in g.subjects(RDF.type, SH.NodeShape):
             target_class = g.value(node_shape, SH.targetClass)
             if not target_class:
                 continue
-
             properties = {}
             for prop_node in g.objects(node_shape, SH.property):
                 name = g.value(prop_node, SH.name)
@@ -55,9 +65,14 @@ class _ShapeIndex:
                     "datatype": g.value(prop_node, SH.datatype),
                     "class": g.value(prop_node, SH["class"]),
                 }
-            return cls(target_class, properties)
+            shapes.append(cls(target_class, properties))
 
-        return None
+        if not shapes:
+            return None
+        for shape in shapes:
+            if shape.target_class in processor_classes:
+                return shape
+        return shapes[0]
 
 
 class PipelineTtlSerializer:
