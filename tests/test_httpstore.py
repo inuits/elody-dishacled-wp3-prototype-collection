@@ -155,3 +155,8 @@ class TestGetItemIncludesRawTtl:
 
         assert item["data"]["rawTtl"] == EXAMPLE_TTL
         assert len(item["data"]["properties"]) == 2
+        # form fields (modalFormFields shape) derived from the SHACL
+        form_fields = item["data"]["formFields"]
+        assert form_fields["url"]["inputField"]["type"] == "baseTextField"
+        assert form_fields["url"]["inputField"]["validation"]["value"] == ["required"]
+        assert form_fields["follow"]["inputField"]["type"] == "baseCheckbox"

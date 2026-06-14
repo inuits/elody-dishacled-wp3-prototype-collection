@@ -5,6 +5,7 @@ import requests
 import requests_cache
 
 from apps.dishacled.shacl.parser import ShaclParser
+from apps.dishacled.shacl.form import shacl_properties_to_form_fields
 from storage.httpstore import HttpStorageManager
 from configuration import get_object_configuration_mapper
 from serialization.serialize import serialize
@@ -141,10 +142,11 @@ class DishacledHttpStorageManager(HttpStorageManager):
                 )
                 if content
             ]
-            properties = self._parse_shacl_contents(contents)
-            if properties:
+            prop_objects = self._parse_shacl_property_objects(contents)
+            if prop_objects:
                 prepared["data"] = {
-                    "properties": properties,
+                    "properties": self._parse_shacl_contents(contents),
+                    "formFields": shacl_properties_to_form_fields(prop_objects),
                     "rawTtl": "\n".join(contents),
                 }
 
@@ -174,26 +176,29 @@ class DishacledHttpStorageManager(HttpStorageManager):
         ]
         return self._parse_shacl_contents(contents)
 
-    def _parse_shacl_contents(self, contents):
+    def _parse_shacl_property_objects(self, contents):
         parser = ShaclParser()
-        all_properties = []
+        all_props = []
         for content in contents:
             try:
                 shapes = parser.parse(content)
             except Exception:
                 continue
             for properties in shapes.values():
-                for prop in properties:
-                    all_properties.append(
-                        {
-                            "name": prop.name,
-                            "inputFieldType": prop.input_field_type,
-                            "isRequired": prop.is_required,
-                            "inValues": prop.in_values,
-                            "classRef": prop.class_ref,
-                        }
-                    )
-        return all_properties
+                all_props.extend(properties)
+        return all_props
+
+    def _parse_shacl_contents(self, contents):
+        return [
+            {
+                "name": prop.name,
+                "inputFieldType": prop.input_field_type,
+                "isRequired": prop.is_required,
+                "inValues": prop.in_values,
+                "classRef": prop.class_ref,
+            }
+            for prop in self._parse_shacl_property_objects(contents)
+        ]
 
     def _find_ttl_files(self, repo):
         owner = repo.get("owner", {}).get("login", "")
