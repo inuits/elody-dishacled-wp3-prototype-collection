@@ -234,3 +234,40 @@ class TestShaclParser:
         shapes = parser.parse(ttl)
         props = {p.name: p for p in shapes["TestProc"]}
         assert props["out"].input_field_type == "channelRelationField"
+
+
+class TestMainProcessorProperties:
+    def test_returns_only_processor_shape_props(self):
+        ttl = """\
+@prefix rdfc: <https://w3id.org/rdf-connect#>.
+@prefix sh: <http://www.w3.org/ns/shacl#>.
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#>.
+
+rdfc:HttpFetch rdfc:jsImplementationOf rdfc:Processor.
+
+[ ] a sh:NodeShape;
+  sh:targetClass rdfc:HttpFetchAuth;
+  sh:property [ sh:datatype xsd:string; sh:path rdfc:type; sh:name "type"; ].
+
+[ ] a sh:NodeShape;
+  sh:targetClass rdfc:HttpFetch;
+  sh:property [ sh:datatype xsd:string; sh:path rdfc:url; sh:name "url"; ],
+              [ sh:class rdfc:Writer; sh:path rdfc:writer; sh:name "writer"; ].
+"""
+        props = ShaclParser().parse_main_processor_properties(ttl)
+        names = {p.name for p in props}
+        assert names == {"url", "writer"}
+        assert "type" not in names
+
+    def test_falls_back_to_all_when_no_processor_class(self):
+        ttl = """\
+@prefix rdfc: <https://w3id.org/rdf-connect#>.
+@prefix sh: <http://www.w3.org/ns/shacl#>.
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#>.
+
+[ ] a sh:NodeShape;
+  sh:targetClass rdfc:Foo;
+  sh:property [ sh:datatype xsd:string; sh:path rdfc:a; sh:name "a"; ].
+"""
+        props = ShaclParser().parse_main_processor_properties(ttl)
+        assert {p.name for p in props} == {"a"}

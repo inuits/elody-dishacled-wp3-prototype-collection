@@ -144,9 +144,13 @@ class DishacledHttpStorageManager(HttpStorageManager):
             ]
             prop_objects = self._parse_shacl_property_objects(contents)
             if prop_objects:
+                # form uses only the main processor shape; properties keep all
+                main_props = self._parse_main_processor_property_objects(contents)
                 prepared["data"] = {
                     "properties": self._parse_shacl_contents(contents),
-                    "formFields": shacl_properties_to_form_fields(prop_objects),
+                    "formFields": shacl_properties_to_form_fields(
+                        main_props or prop_objects
+                    ),
                     "rawTtl": "\n".join(contents),
                 }
 
@@ -186,6 +190,18 @@ class DishacledHttpStorageManager(HttpStorageManager):
                 continue
             for properties in shapes.values():
                 all_props.extend(properties)
+        return all_props
+
+    def _parse_main_processor_property_objects(self, contents):
+        # only the main processor shape's properties (skip aux shapes like
+        # HttpFetchAuth/HttpFetchOptions) so the config form stays focused
+        parser = ShaclParser()
+        all_props = []
+        for content in contents:
+            try:
+                all_props.extend(parser.parse_main_processor_properties(content))
+            except Exception:
+                continue
         return all_props
 
     def _parse_shacl_contents(self, contents):

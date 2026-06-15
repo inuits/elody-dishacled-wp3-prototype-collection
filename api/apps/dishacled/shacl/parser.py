@@ -85,6 +85,45 @@ class ShaclParser:
 
         return shapes
 
+    def parse_main_processor_properties(
+        self, ttl_string: str
+    ) -> list[ShaclProperty]:
+        """Properties of the main processor shape only.
+
+        Multi-shape files (e.g. http-utils: HttpFetch + HttpFetchAuth +
+        HttpFetchOptions) otherwise flatten into one big form. The main shape
+        is the one whose sh:targetClass is the subject of a
+        `rdfc:*ImplementationOf rdfc:Processor` triple. Falls back to all
+        properties if no such shape is found.
+        """
+        g = Graph()
+        g.parse(data=ttl_string, format="turtle")
+
+        processor_classes = {
+            s
+            for s, p, o in g
+            if o == RDFC.Processor
+            and str(p).split("#")[-1].endswith("ImplementationOf")
+        }
+
+        all_props = []
+        for node_shape in g.subjects(RDF.type, SH.NodeShape):
+            target_class = g.value(node_shape, SH.targetClass)
+            if not target_class:
+                continue
+            props = [
+                prop
+                for prop in (
+                    self._parse_property(g, p)
+                    for p in g.objects(node_shape, SH.property)
+                )
+                if prop
+            ]
+            if target_class in processor_classes:
+                return props
+            all_props.extend(props)
+        return all_props
+
     def parse_processor_metadata(self, ttl_string: str) -> dict:
         g = Graph()
         g.parse(data=ttl_string, format="turtle")
