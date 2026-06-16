@@ -1,0 +1,59 @@
+@prefix rdfc: <https://w3id.org/rdf-connect#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix shui: <http://www.w3.org/ns/shacl-ui#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+[] a sh:NodeShape ;
+    sh:property [ sh:minCount 1 ;
+            sh:name "writer" ;
+            sh:path rdfc:writer ;
+            shui:editor shui:InstancesSelectEditor ],
+        [ sh:name "options" ;
+            sh:node [ a sh:NodeShape ;
+                    sh:property [ sh:name "timeOutMilliseconds" ;
+                            sh:path rdfc:timeOutMilliseconds ;
+                            shui:editor shui:NumberFieldEditor ],
+                        [ sh:name "cron" ;
+                            sh:path rdfc:cron ;
+                            shui:editor shui:TextFieldEditor ],
+                        [ sh:name "auth" ;
+                            sh:node [ a sh:NodeShape ;
+                                    sh:property [ sh:minCount 1 ;
+                                            sh:name "type" ;
+                                            sh:path rdfc:type ;
+                                            shui:editor shui:TextFieldEditor ] ] ;
+                            sh:path rdfc:HttpFetchAuth ;
+                            shui:editor shui:DetailsEditor ],
+                        [ sh:name "closeOnEnd" ;
+                            sh:path rdfc:closeOnEnd ;
+                            shui:editor shui:BooleanEditor ],
+                        [ sh:name "outputAsBuffer" ;
+                            sh:path rdfc:outputAsBuffer ;
+                            shui:editor shui:BooleanEditor ],
+                        [ sh:name "runOnInit" ;
+                            sh:path rdfc:runOnInit ;
+                            shui:editor shui:BooleanEditor ],
+                        [ sh:name "acceptStatusCodes" ;
+                            sh:path rdfc:acceptStatusCodes ;
+                            shui:editor shui:TextFieldEditor ],
+                        [ sh:name "method" ;
+                            sh:path rdfc:method ;
+                            shui:editor shui:TextFieldEditor ],
+                        [ sh:name "headers" ;
+                            sh:path rdfc:headers ;
+                            shui:editor shui:TextFieldEditor ],
+                        [ sh:name "outputAsStream" ;
+                            sh:path rdfc:outputAsStream ;
+                            shui:editor shui:BooleanEditor ],
+                        [ sh:name "errorsAreFatal" ;
+                            sh:path rdfc:errorsAreFatal ;
+                            shui:editor shui:BooleanEditor ] ] ;
+            sh:path rdfc:options ;
+            shui:editor shui:DetailsEditor ],
+        [ sh:minCount 1 ;
+            sh:name "url" ;
+            sh:path rdfc:url ;
+            shui:editor shui:TextFieldEditor ] ;
+    sh:targetClass rdfc:HttpFetch .
+
+
