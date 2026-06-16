@@ -20,6 +20,29 @@ def _slugify(value):
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
 
 
+def _nest_metadata(metadata):
+    """Flat dotted-key metadata -> nested dict.
+
+    [{"key": "options.auth.type", "value": "bearer"}]
+        -> {"options": {"auth": {"type": "bearer"}}}
+    """
+    result = {}
+    for item in metadata:
+        key = item.get("key")
+        if not key:
+            continue
+        parts = key.split(".")
+        cursor = result
+        for part in parts[:-1]:
+            nxt = cursor.get(part)
+            if not isinstance(nxt, dict):
+                nxt = {}
+                cursor[part] = nxt
+            cursor = nxt
+        cursor[parts[-1]] = item.get("value")
+    return result
+
+
 def _get_metadata_value(entity, key):
     for item in entity.get("metadata", []):
         if item.get("key") == key:
@@ -28,16 +51,28 @@ def _get_metadata_value(entity, key):
 
 
 class _ShapeIndex:
-    """Property bindings (sh:name -> path/datatype/class) for one processor shape."""
+    """Property bindings for one processor shape, with nested shapes resolved.
+
+    `properties` maps sh:name -> {path, datatype, class, nested}. A property
+    whose sh:class / sh:node points to another local NodeShape carries that
+    shape as `nested` (an _ShapeIndex), recursively — so nested config
+    (shui:DetailsEditor) round-trips into nested RDF-Connect blank nodes.
+    """
 
     def __init__(self, target_class, properties):
         self.target_class = target_class
-        self.properties = properties  # name -> {path, datatype, class}
+        self.properties = properties  # name -> {path, datatype, class, nested}
 
     @classmethod
     def from_ttl(cls, raw_ttl):
         g = Graph()
         g.parse(data=raw_ttl, format="turtle")
+
+        shapes_by_class = {}
+        for node_shape in g.subjects(RDF.type, SH.NodeShape):
+            target_class = g.value(node_shape, SH.targetClass)
+            if target_class is not None:
+                shapes_by_class[target_class] = node_shape
 
         # The processor class is the subject of a `rdfc:*ImplementationOf
         # rdfc:Processor` triple (e.g. rdfc:HttpFetch). Prefer the NodeShape
@@ -49,30 +84,54 @@ class _ShapeIndex:
             if o == RDFC.Processor and str(p).split("#")[-1].endswith("ImplementationOf")
         }
 
-        shapes = []
-        for node_shape in g.subjects(RDF.type, SH.NodeShape):
-            target_class = g.value(node_shape, SH.targetClass)
-            if not target_class:
-                continue
-            properties = {}
-            for prop_node in g.objects(node_shape, SH.property):
-                name = g.value(prop_node, SH.name)
-                path = g.value(prop_node, SH.path)
-                if not name or not path:
-                    continue
-                properties[str(name)] = {
-                    "path": path,
-                    "datatype": g.value(prop_node, SH.datatype),
-                    "class": g.value(prop_node, SH["class"]),
-                }
-            shapes.append(cls(target_class, properties))
-
-        if not shapes:
+        main_class = next(
+            (c for c in processor_classes if c in shapes_by_class), None
+        )
+        if main_class is None:
+            main_class = next(iter(shapes_by_class), None)
+        if main_class is None:
             return None
-        for shape in shapes:
-            if shape.target_class in processor_classes:
-                return shape
-        return shapes[0]
+
+        return cls._build(g, main_class, shapes_by_class, {main_class})
+
+    @classmethod
+    def _build(cls, g, target_class, shapes_by_class, visited):
+        node_shape = shapes_by_class[target_class]
+        properties = {}
+        for prop_node in g.objects(node_shape, SH.property):
+            name = g.value(prop_node, SH.name)
+            path = g.value(prop_node, SH.path)
+            if not name or not path:
+                continue
+            class_ref = g.value(prop_node, SH["class"])
+            node_ref = g.value(prop_node, SH.node)
+
+            nested = None
+            nested_class = None
+            if node_ref is not None:
+                nested_class = g.value(node_ref, SH.targetClass)
+            elif (
+                class_ref is not None
+                and class_ref not in CHANNEL_CLASSES
+                and class_ref in shapes_by_class
+            ):
+                nested_class = class_ref
+            if (
+                nested_class is not None
+                and nested_class in shapes_by_class
+                and nested_class not in visited
+            ):
+                nested = cls._build(
+                    g, nested_class, shapes_by_class, visited | {nested_class}
+                )
+
+            properties[str(name)] = {
+                "path": path,
+                "datatype": g.value(prop_node, SH.datatype),
+                "class": class_ref,
+                "nested": nested,
+            }
+        return cls(target_class, properties)
 
 
 class PipelineTtlSerializer:
@@ -119,23 +178,10 @@ class PipelineTtlSerializer:
             )
             runner_groups.setdefault(runner, []).append(stage_uri)
 
-            for item in relation.get("metadata", []):
-                binding = shape.properties.get(item.get("key"))
-                value = item.get("value")
-                if not binding or value in (None, ""):
-                    continue
-
-                if binding["class"] in CHANNEL_CLASSES:
-                    channel_uri = URIRef(self.base_uri + _slugify(value))
-                    g.add((stage_uri, binding["path"], channel_uri))
-                    channels.add(channel_uri)
-                else:
-                    datatype = binding["datatype"]
-                    if datatype == XSD_STRING:
-                        datatype = None  # plain literal, identical in RDF 1.1
-                    g.add(
-                        (stage_uri, binding["path"], Literal(value, datatype=datatype))
-                    )
+            # Flat dotted-key metadata (url, options.method, options.auth.type)
+            # -> nested value dict, then emit following the (nested) shape.
+            values = _nest_metadata(relation.get("metadata", []))
+            self._emit_values(g, stage_uri, shape, values, channels)
 
         for runner, stages in runner_groups.items():
             group = BNode()
@@ -149,6 +195,38 @@ class PipelineTtlSerializer:
             g.add((channel_uri, RDF.type, RDFC.Writer))
 
         return g.serialize(format="turtle")
+
+    def _emit_values(self, g, subject, shape, values, channels):
+        """Emit one shape's values onto `subject`, recursing into nested nodes."""
+        for name, binding in shape.properties.items():
+            if name not in values:
+                continue
+            value = values[name]
+
+            if binding["nested"] is not None:
+                if not isinstance(value, dict):
+                    continue
+                nested_node = BNode()
+                self._emit_values(
+                    g, nested_node, binding["nested"], value, channels
+                )
+                # only attach if the nested node carries any triples
+                if next(g.predicate_objects(nested_node), None) is not None:
+                    g.add((subject, binding["path"], nested_node))
+                continue
+
+            if value in (None, ""):
+                continue
+
+            if binding["class"] in CHANNEL_CLASSES:
+                channel_uri = URIRef(self.base_uri + _slugify(value))
+                g.add((subject, binding["path"], channel_uri))
+                channels.add(channel_uri)
+            else:
+                datatype = binding["datatype"]
+                if datatype == XSD_STRING:
+                    datatype = None  # plain literal, identical in RDF 1.1
+                g.add((subject, binding["path"], Literal(value, datatype=datatype)))
 
     def _stage_uri(self, processor):
         name = _get_metadata_value(processor, "name") or processor.get(

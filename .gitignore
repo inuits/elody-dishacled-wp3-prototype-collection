@@ -145,3 +145,10 @@ import/
 
 # pip configuration
 pip.conf
+# macOS
+.DS_Store
+
+# Generated presentation artifacts (regenerate from the .md / gen_pptx.py)
+docs/*.pdf
+docs/*.pptx
+docs/*.html

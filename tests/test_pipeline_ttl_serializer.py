@@ -409,3 +409,82 @@ class TestMultiShapeProcessor:
         # url + writer bound from the processor shape
         assert g.value(stage, RDFC.url) == Literal("https://example.org/feed")
         assert g.value(stage, RDFC.writer) == URIRef(BASE + "json")
+
+
+NESTED_TTL = """\
+@prefix rdfc: <https://w3id.org/rdf-connect#>.
+@prefix sh: <http://www.w3.org/ns/shacl#>.
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#>.
+
+rdfc:HttpFetch rdfc:jsImplementationOf rdfc:Processor.
+
+[ ] a sh:NodeShape;
+  sh:targetClass rdfc:HttpFetch;
+  sh:property [ sh:datatype xsd:string; sh:path rdfc:url; sh:name "url"; sh:minCount 1; ],
+              [ sh:class rdfc:Writer; sh:path rdfc:writer; sh:name "writer"; ],
+              [ sh:class rdfc:HttpFetchOptions; sh:path rdfc:options; sh:name "options"; ].
+
+[ ] a sh:NodeShape;
+  sh:targetClass rdfc:HttpFetchOptions;
+  sh:property [ sh:datatype xsd:string; sh:path rdfc:method; sh:name "method"; ],
+              [ sh:datatype xsd:integer; sh:path rdfc:timeout; sh:name "timeout"; ],
+              [ sh:class rdfc:HttpFetchAuth; sh:path rdfc:auth; sh:name "auth"; ].
+
+[ ] a sh:NodeShape;
+  sh:targetClass rdfc:HttpFetchAuth;
+  sh:property [ sh:datatype xsd:string; sh:path rdfc:type; sh:name "type"; sh:minCount 1; ].
+"""
+
+
+class TestNestedConfig:
+    def _graph(self):
+        pipeline = make_pipeline(
+            [
+                {
+                    "key": "rdfc--http-utils",
+                    "type": "hasProcessor",
+                    "metadata": [
+                        {"key": "url", "value": "https://api.example/data"},
+                        {"key": "writer", "value": "out channel"},
+                        {"key": "options.method", "value": "GET"},
+                        {"key": "options.timeout", "value": "5000"},
+                        {"key": "options.auth.type", "value": "bearer"},
+                    ],
+                }
+            ]
+        )
+        processor = make_processor(
+            "rdfc--http-utils", "http-fetch", "ts", NESTED_TTL
+        )
+        ttl = PipelineTtlSerializer(base_uri=BASE).serialize(
+            pipeline, {"rdfc--http-utils": processor}
+        )
+        g = Graph()
+        g.parse(data=ttl, format="turtle")
+        return g
+
+    def test_top_level_url_on_stage(self):
+        g = self._graph()
+        stage = URIRef(BASE + "http-fetch")
+        assert g.value(stage, RDFC.url) == Literal("https://api.example/data")
+
+    def test_options_is_a_nested_node(self):
+        g = self._graph()
+        stage = URIRef(BASE + "http-fetch")
+        opts = g.value(stage, RDFC.options)
+        assert opts is not None
+        assert g.value(opts, RDFC.method) == Literal("GET")
+        assert g.value(opts, RDFC.timeout) == Literal("5000", datatype=XSD.integer)
+
+    def test_auth_is_nested_in_options(self):
+        g = self._graph()
+        stage = URIRef(BASE + "http-fetch")
+        opts = g.value(stage, RDFC.options)
+        auth = g.value(opts, RDFC.auth)
+        assert auth is not None
+        assert g.value(auth, RDFC.type) == Literal("bearer")
+
+    def test_writer_still_resolves_to_channel(self):
+        g = self._graph()
+        stage = URIRef(BASE + "http-fetch")
+        assert g.value(stage, RDFC.writer) == URIRef(BASE + "out-channel")

@@ -5,7 +5,10 @@ import requests
 import requests_cache
 
 from apps.dishacled.shacl.parser import ShaclParser
-from apps.dishacled.shacl.form import shacl_properties_to_form_fields
+from apps.dishacled.shacl.form import (
+    shacl_properties_to_form_fields,
+    shacl_to_form_fields,
+)
 from storage.httpstore import HttpStorageManager
 from configuration import get_object_configuration_mapper
 from serialization.serialize import serialize
@@ -144,14 +147,23 @@ class DishacledHttpStorageManager(HttpStorageManager):
             ]
             prop_objects = self._parse_shacl_property_objects(contents)
             if prop_objects:
-                # form uses only the main processor shape; properties keep all
-                main_props = self._parse_main_processor_property_objects(contents)
+                raw_ttl = "\n".join(contents)
+                # Form fields follow SHACL 1.2 UI: the main processor shape's
+                # properties, with nested node shapes as inputFieldWithSubFields
+                # (shui:DetailsEditor). Fall back to the flat main-shape mapping.
+                try:
+                    form_fields = shacl_to_form_fields(raw_ttl)
+                except Exception:
+                    main_props = self._parse_main_processor_property_objects(
+                        contents
+                    )
+                    form_fields = shacl_properties_to_form_fields(
+                        main_props or prop_objects
+                    )
                 prepared["data"] = {
                     "properties": self._parse_shacl_contents(contents),
-                    "formFields": shacl_properties_to_form_fields(
-                        main_props or prop_objects
-                    ),
-                    "rawTtl": "\n".join(contents),
+                    "formFields": form_fields,
+                    "rawTtl": raw_ttl,
                 }
 
         return prepared

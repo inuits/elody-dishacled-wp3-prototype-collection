@@ -18,18 +18,18 @@ class TestWidgetMapping:
         fields = shacl_properties_to_form_fields(props)
         f = _field(fields, "url")
         assert f["__typename"] == "PanelMetaData"
-        assert f["inputField"]["type"] == "baseTextField"
+        assert f["inputField"]["type"] == "text"
         assert f["inputField"]["__typename"] == "InputField"
 
     def test_integer_maps_to_number_field(self):
         props = [ShaclProperty(name="pollInterval", path="rdfc:pollInterval", datatype="xsd:integer", input_field_type="baseNumberField")]
         fields = shacl_properties_to_form_fields(props)
-        assert _field(fields, "pollInterval")["inputField"]["type"] == "baseNumberField"
+        assert _field(fields, "pollInterval")["inputField"]["type"] == "number"
 
     def test_boolean_maps_to_checkbox(self):
         props = [ShaclProperty(name="materialize", path="rdfc:materialize", datatype="xsd:boolean", input_field_type="baseCheckbox")]
         fields = shacl_properties_to_form_fields(props)
-        assert _field(fields, "materialize")["inputField"]["type"] == "baseCheckbox"
+        assert _field(fields, "materialize")["inputField"]["type"] == "checkbox"
 
     def test_sh_in_maps_to_dropdown_with_options(self):
         props = [ShaclProperty(name="level", path="rdfc:level", in_values=["info", "warn", "error"], input_field_type="baseSelectField")]
