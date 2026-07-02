@@ -66,7 +66,12 @@ class _ShapeIndex:
     @classmethod
     def from_ttl(cls, raw_ttl):
         g = Graph()
-        g.parse(data=raw_ttl, format="turtle")
+        try:
+            g.parse(data=raw_ttl, format="turtle")
+        except Exception:
+            # a processor with unparseable TTL should not break the whole
+            # pipeline export; its stage is skipped
+            return None
 
         shapes_by_class = {}
         for node_shape in g.subjects(RDF.type, SH.NodeShape):

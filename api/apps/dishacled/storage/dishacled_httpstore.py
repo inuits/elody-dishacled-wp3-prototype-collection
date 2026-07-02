@@ -3,6 +3,7 @@ from os import getenv
 
 import requests
 import requests_cache
+from rdflib import Graph
 
 from apps.dishacled.shacl.parser import ShaclParser
 from apps.dishacled.shacl.form import (
@@ -14,6 +15,14 @@ from configuration import get_object_configuration_mapper
 from serialization.serialize import serialize
 
 CACHE_LOCATION = getenv("CACHE_LOCATION", "/tmp/dishacled_http_store-cache")
+
+
+def _is_valid_turtle(content: str) -> bool:
+    try:
+        Graph().parse(data=content, format="turtle")
+        return True
+    except Exception:
+        return False
 
 
 class DishacledHttpStorageManager(HttpStorageManager):
@@ -138,12 +147,16 @@ class DishacledHttpStorageManager(HttpStorageManager):
             prepared["metadata"].append(
                 {"key": "shaclFiles", "value": ",".join(ttl_files)}
             )
+            # Repos may contain TTL files that are not valid standalone
+            # turtle (test fixtures, doc snippets). Keep only files that
+            # parse, so rawTtl (their concatenation) stays parseable for the
+            # form derivation and the pipeline TTL export.
             contents = [
                 content
                 for content in (
                     self._fetch_ttl_content(repo, ttl_path) for ttl_path in ttl_files
                 )
-                if content
+                if content and _is_valid_turtle(content)
             ]
             prop_objects = self._parse_shacl_property_objects(contents)
             if prop_objects:
