@@ -83,7 +83,9 @@ class TestShaclToFormFields:
         fields = shacl_to_form_fields(HTTP_UTILS_TTL)
         sf = fields["options"]["inputField"]["subFields"][0]
         assert sf["__typename"] == "SubField"
-        assert sf["label"].startswith("metadata.labels.")
+        # labels are humanized plain text, not translation keys
+        assert sf["label"]
+        assert not sf["label"].startswith("metadata.labels.")
 
     def test_ordering_preserved(self):
         fields = shacl_to_form_fields(HTTP_UTILS_TTL)

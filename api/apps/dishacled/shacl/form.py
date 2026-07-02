@@ -46,9 +46,30 @@ _FIELD_TYPE_MAP = {
 _CHANNEL_FIELD_TYPES = {"hasWriterField", "channelRelationField"}
 
 
-def _camel_to_kebab(name: str) -> str:
-    s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1-\2", name)
-    return re.sub(r"([a-z0-9])([A-Z])", r"\1-\2", s1).lower()
+# Words rendered in uppercase when humanizing parameter names into labels.
+_ACRONYMS = {"url", "iri", "id", "db", "api", "http", "mime"}
+
+
+def _humanize(name: str) -> str:
+    """Turn a camelCase parameter name into a human-readable label.
+
+    Labels are emitted as plain text (not translation keys) so every
+    SHACL-described processor gets readable field labels without requiring
+    per-processor translation maintenance. vue-i18n's t() passes unknown
+    plain-text keys through unchanged.
+    """
+    s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1 \2", name)
+    words = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", s1).split()
+    out = []
+    for i, word in enumerate(words):
+        lower = word.lower()
+        if lower in _ACRONYMS:
+            out.append(word.upper())
+        elif i == 0:
+            out.append(word.capitalize())
+        else:
+            out.append(lower)
+    return " ".join(out)
 
 
 def _dropdown_options(values: list) -> list:
@@ -130,7 +151,7 @@ def _ui_node_to_input_field(
             {
                 "__typename": "SubField",
                 "key": f"{full_key}.{child.name}",
-                "label": f"metadata.labels.{_camel_to_kebab(child.name)}",
+                "label": _humanize(child.name),
                 "inputField": _ui_node_to_input_field(
                     child, channel_options, f"{full_key}.{child.name}"
                 ),
@@ -161,7 +182,7 @@ def shacl_to_form_fields(
     for node in ordered:
         fields[node.name] = {
             "key": node.name,
-            "label": f"metadata.labels.{_camel_to_kebab(node.name)}",
+            "label": _humanize(node.name),
             "__typename": "PanelMetaData",
             "inputField": _ui_node_to_input_field(
                 node, channel_options, node.name
@@ -184,7 +205,7 @@ def shacl_properties_to_form_fields(
     for prop in properties:
         fields[prop.name] = {
             "key": prop.name,
-            "label": f"metadata.labels.{_camel_to_kebab(prop.name)}",
+            "label": _humanize(prop.name),
             "__typename": "PanelMetaData",
             "inputField": _build_input_field(prop, channel_options),
         }

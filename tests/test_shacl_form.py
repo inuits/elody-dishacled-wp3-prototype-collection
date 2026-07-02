@@ -90,10 +90,10 @@ class TestLabelsAndKeys:
         fields = shacl_properties_to_form_fields(props)
         assert _field(fields, "pollInterval")["key"] == "pollInterval"
 
-    def test_label_is_translation_key_from_kebab_name(self):
+    def test_label_is_humanized_from_camel_case_name(self):
         props = [ShaclProperty(name="pollInterval", path="rdfc:pollInterval", datatype="xsd:integer", input_field_type="baseNumberField")]
         fields = shacl_properties_to_form_fields(props)
-        assert _field(fields, "pollInterval")["label"] == "metadata.labels.poll-interval"
+        assert _field(fields, "pollInterval")["label"] == "Poll interval"
 
 
 class TestFormStructure:
