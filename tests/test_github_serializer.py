@@ -120,6 +120,18 @@ class TestGithubSerializer:
         result = serializer.from_elody_filter_to_github_filter(filters)
         assert result.get("identifiers") == ["rdfc--ldes-client", "rdfc--rml-mapper"]
 
+    def test_from_elody_filter_to_github_filter_empty_identifiers_selection(self):
+        # A relation selection filter that resolved to no related entities must
+        # produce an explicit empty identifiers list ("restrict to none"),
+        # not be dropped (which would be treated as "no restriction").
+        serializer = GithubSerializer()
+        filters = [
+            {"type": "type", "value": "githubProcessor"},
+            {"type": "selection", "key": ["elody:1|identifiers"], "value": []},
+        ]
+        result = serializer.from_elody_filter_to_github_filter(filters)
+        assert result.get("identifiers") == []
+
     def test_handles_missing_description(self):
         serializer = GithubSerializer()
         repo = {**MOCK_GITHUB_REPO, "description": None}

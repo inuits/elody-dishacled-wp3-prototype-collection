@@ -124,11 +124,46 @@ class ShaclParser:
             all_props.extend(props)
         return all_props
 
+    def parse_shape_properties(
+        self, ttl_string: str, shape_iri: str | None = None
+    ) -> list[ShaclProperty]:
+        """Properties of a single node shape, addressed by its own IRI.
+
+        Unlike parse(), this does not key by sh:targetClass. Two shapes may
+        legitimately share a target class -- the cm and mm interface shapes
+        both describe demo:Measurement -- and would overwrite each other in
+        parse()'s dict. Contracts therefore read one shape at a time.
+
+        `shape_iri` of None selects the sole node shape in the document (the
+        common case for an extracted shape sub-graph); if several are present,
+        the first in iteration order is used.
+        """
+        g = Graph()
+        g.parse(data=ttl_string, format="turtle")
+
+        if shape_iri:
+            shape = URIRef(shape_iri)
+            if (shape, RDF.type, SH.NodeShape) not in g:
+                return []
+        else:
+            shape = next(g.subjects(RDF.type, SH.NodeShape), None)
+            if shape is None:
+                return []
+
+        return [
+            prop
+            for prop in (
+                self._parse_property(g, p) for p in g.objects(shape, SH.property)
+            )
+            if prop
+        ]
+
     def parse_processor_metadata(self, ttl_string: str) -> dict:
         g = Graph()
         g.parse(data=ttl_string, format="turtle")
 
         metadata = {
+            "iri": None,
             "label": None,
             "comment": None,
             "class": None,
@@ -137,6 +172,9 @@ class ShaclParser:
         }
 
         for s in g.subjects(RDFC.jsImplementationOf, RDFC.Processor):
+            # the subject IRI identifies the component this TTL implements, and
+            # is the join key against the contract catalog
+            metadata["iri"] = str(s)
             metadata["label"] = str(g.value(s, RDFS.label) or "")
             metadata["comment"] = str(g.value(s, RDFS.comment) or "")
             metadata["class"] = str(g.value(s, RDFC["class"]) or "")

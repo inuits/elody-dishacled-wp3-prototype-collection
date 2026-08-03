@@ -6,10 +6,12 @@ import requests_cache
 from rdflib import Graph
 
 from apps.dishacled.shacl.parser import ShaclParser
+from apps.dishacled.shacl.contracts import ContractCatalog, component_iri_from_ttl
 from apps.dishacled.shacl.form import (
     shacl_properties_to_form_fields,
     shacl_to_form_fields,
 )
+from apps.dishacled.storage.local_component_source import LocalComponentSource
 from storage.httpstore import HttpStorageManager
 from configuration import get_object_configuration_mapper
 from serialization.serialize import serialize
@@ -30,6 +32,7 @@ class DishacledHttpStorageManager(HttpStorageManager):
         self.github_api_url = getenv("GITHUB_API_URL", "https://api.github.com")
         self.github_token = getenv("GITHUB_TOKEN", "")
         self.processor_topic = getenv("GITHUB_PROCESSOR_TOPIC", "rdfc-processor")
+        self.local_components = LocalComponentSource()
         self.session = requests_cache.CachedSession(
             CACHE_LOCATION,
             expire_after=3600,
@@ -87,7 +90,10 @@ class DishacledHttpStorageManager(HttpStorageManager):
                     identifiers = filter_params.get("identifiers")
                     extra_query = filter_params.get("q_extra", "")
 
-        if identifiers:
+        # A present (even if empty) identifiers filter restricts the result to
+        # exactly those identifiers. An empty list yields no results without
+        # falling through to the "search all repos by topic" branch below.
+        if identifiers is not None:
             return self._get_items_by_identifiers(collection, identifiers, skip, limit)
 
         page_size = limit
@@ -107,15 +113,24 @@ class DishacledHttpStorageManager(HttpStorageManager):
             "order": "desc",
         }
 
+        # Catalog-declared components are listed first so the demo components
+        # are visible on the first page alongside the discovered repositories.
+        local_documents = self.local_components.list_documents(extra_query)
+
         response = self.session.get(url, headers=self._get_headers(), params=params)
         if response.status_code not in [200]:
-            return {"results": [], "count": 0, "limit": limit, "skip": skip}
+            return {
+                "results": local_documents,
+                "count": len(local_documents),
+                "limit": limit,
+                "skip": skip,
+            }
 
         data = response.json()
         results = data.get("items", [])
-        total_count = data.get("total_count", 0)
+        total_count = data.get("total_count", 0) + len(local_documents)
 
-        prepared_documents = []
+        prepared_documents = list(local_documents)
         for repo in results:
             prepared = _prepare_http_document(collection, repo)
             prepared["type"] = "githubProcessor"
@@ -129,9 +144,19 @@ class DishacledHttpStorageManager(HttpStorageManager):
         }
 
     def get_item_from_collection_by_id(self, collection, id):
+        # Catalog-declared components have no repository behind them, so they
+        # resolve locally and never touch GitHub.
+        if self.local_components.matches(id):
+            return self.local_components.get_document(id) or {}
+
         repo_path = id.replace("--", "/")
         url = f"{self.github_api_url}/repos/{repo_path}"
-        response = self.session.get(url, headers=self._get_headers())
+        try:
+            response = self.session.get(url, headers=self._get_headers())
+        except requests.exceptions.RequestException:
+            # GitHub unreachable (offline / DNS failure): resolve to nothing
+            # instead of failing the whole request.
+            return {}
 
         if response.status_code == 404:
             return {}
@@ -177,9 +202,23 @@ class DishacledHttpStorageManager(HttpStorageManager):
                     "properties": self._parse_shacl_contents(contents),
                     "formFields": form_fields,
                     "rawTtl": raw_ttl,
+                    **self._contract_overlay(raw_ttl),
                 }
 
         return prepared
+
+    def _contract_overlay(self, raw_ttl):
+        """Input/output/config shapes for the component this repo implements.
+
+        Joined on the class IRI the repo's own TTL declares. Returns nothing
+        when the component is unknown to the catalog, so a processor without a
+        contract simply carries no shape keys.
+        """
+        try:
+            contract = ContractCatalog.default().get(component_iri_from_ttl(raw_ttl))
+        except Exception:
+            return {}
+        return contract.to_data() if contract else {}
 
     def _fetch_ttl_content(self, repo, file_path):
         owner = repo.get("owner", {}).get("login", "")

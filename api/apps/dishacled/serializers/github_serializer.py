@@ -66,9 +66,17 @@ class GithubSerializer:
                 params["q_extra"] = filter_value
 
             if filter_type == "selection" and "identifiers" in str(filter_key):
-                ids = filter_value if isinstance(filter_value, list) else [filter_value]
-                if ids:
-                    params["identifiers"] = ids
+                if filter_value is None:
+                    ids = []
+                elif isinstance(filter_value, list):
+                    ids = filter_value
+                else:
+                    ids = [filter_value]
+                # The presence of an identifiers selection filter restricts the
+                # result to exactly these identifiers. An empty list therefore
+                # means "no matches" rather than "no restriction", so always
+                # set the key (even when empty).
+                params["identifiers"] = ids
         return params
 
     def from_elody_to_github(self, entity, **kwargs):

@@ -271,3 +271,89 @@ rdfc:HttpFetch rdfc:jsImplementationOf rdfc:Processor.
 """
         props = ShaclParser().parse_main_processor_properties(ttl)
         assert {p.name for p in props} == {"a"}
+
+
+SHARED_TARGET_CLASS_TTL = """\
+@prefix demo: <https://dishacled.github.io/demo#>.
+@prefix sh: <http://www.w3.org/ns/shacl#>.
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#>.
+
+demo:MeasurementsInCmShape a sh:NodeShape;
+  sh:targetClass demo:Measurement;
+  sh:property [
+    sh:path demo:unit; sh:name "unit"; sh:datatype xsd:string; sh:in ("cm");
+  ], [
+    sh:path demo:value; sh:name "value"; sh:datatype xsd:decimal; sh:minCount 1;
+  ].
+
+demo:MeasurementsInMmShape a sh:NodeShape;
+  sh:targetClass demo:Measurement;
+  sh:property [
+    sh:path demo:unit; sh:name "unit"; sh:datatype xsd:string; sh:in ("mm");
+  ].
+"""
+
+
+class TestSingleShapeProperties:
+    """parse_shape_properties() addresses one shape by IRI.
+
+    parse() keys shapes by sh:targetClass local name, so the cm/mm interface
+    shapes -- which deliberately share sh:targetClass demo:Measurement -- would
+    overwrite each other. Contracts therefore read shapes individually.
+    """
+
+    def test_parse_shape_properties_by_iri(self):
+        props = ShaclParser().parse_shape_properties(
+            SHARED_TARGET_CLASS_TTL,
+            "https://dishacled.github.io/demo#MeasurementsInCmShape",
+        )
+        assert {p.name for p in props} == {"unit", "value"}
+        assert next(p for p in props if p.name == "unit").in_values == ["cm"]
+
+    def test_parse_shape_properties_without_iri_uses_the_only_shape(self):
+        ttl = """\
+@prefix demo: <https://dishacled.github.io/demo#>.
+@prefix sh: <http://www.w3.org/ns/shacl#>.
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#>.
+
+[ ] a sh:NodeShape;
+  sh:targetClass demo:Thing;
+  sh:property [ sh:path demo:a; sh:name "a"; sh:datatype xsd:string; ].
+"""
+        props = ShaclParser().parse_shape_properties(ttl)
+        assert {p.name for p in props} == {"a"}
+
+    def test_two_shapes_sharing_a_target_class_do_not_collide(self):
+        parser = ShaclParser()
+        cm = parser.parse_shape_properties(
+            SHARED_TARGET_CLASS_TTL,
+            "https://dishacled.github.io/demo#MeasurementsInCmShape",
+        )
+        mm = parser.parse_shape_properties(
+            SHARED_TARGET_CLASS_TTL,
+            "https://dishacled.github.io/demo#MeasurementsInMmShape",
+        )
+        assert next(p for p in cm if p.name == "unit").in_values == ["cm"]
+        assert next(p for p in mm if p.name == "unit").in_values == ["mm"]
+        # parse() cannot make this distinction -- one shape wins the key
+        assert len(parser.parse(SHARED_TARGET_CLASS_TTL)) == 1
+
+    def test_unknown_shape_iri_returns_no_properties(self):
+        props = ShaclParser().parse_shape_properties(
+            SHARED_TARGET_CLASS_TTL, "https://dishacled.github.io/demo#Nope"
+        )
+        assert props == []
+
+    def test_processor_metadata_includes_subject_iri(self):
+        # the join key between a repo's own TTL and the contract catalog
+        meta = ShaclParser().parse_processor_metadata(EXAMPLE_TTL)
+        assert meta["iri"] == "https://w3id.org/rdf-connect#LdesClient"
+
+    def test_processor_metadata_iri_is_none_without_a_processor(self):
+        ttl = """\
+@prefix demo: <https://dishacled.github.io/demo#>.
+@prefix sh: <http://www.w3.org/ns/shacl#>.
+
+[ ] a sh:NodeShape; sh:targetClass demo:Thing.
+"""
+        assert ShaclParser().parse_processor_metadata(ttl)["iri"] is None

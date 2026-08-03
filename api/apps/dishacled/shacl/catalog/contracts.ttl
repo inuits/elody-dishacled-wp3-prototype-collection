@@ -1,0 +1,387 @@
+# Interim contract catalog for the WP3 prototype.
+#
+# Hand-authored stand-in for the central DiSHACLed catalog: it gives each demo
+# pipeline component an input and an output shape alongside its config shape,
+# so components can be connected (B2) and the chain validated (B3). Datasets
+# declare an output shape only -- they produce data but consume none.
+#
+# Vocabulary follows the DiSHACLed discovery specification
+# (https://dishacled.github.io/discovery-specification/):
+#
+#   * 2.2 `dcat:qualifiedRelation` -> `dcat:hadRole` -> `dcterms:relation`
+#     carries the role-bearing links. This is the form the reference catalog
+#     uses (thcarsten/toolchain-specification, catalog-rdfc.ttl), which is why
+#     the config role reuses its `tcs:configShape`; `tcs:inputShape` and
+#     `tcs:outputShape` are new but follow the same namespace and casing.
+#   * 2.1 `dcterms:conformsTo` additionally lists the same shapes without a
+#     role. The spec states a client treats the alternatives as a logical OR
+#     with no prioritisation, so declaring both is valid and lets a plain
+#     conformsTo-only reader still find the shapes.
+#
+# Components are concrete per-unit variants rather than one generic component
+# with a unit parameter, so a unit mismatch is visible in the catalog itself:
+#
+#   HttpPollerCm -> ThresholdMonitorCm   cm -> cm, compatible
+#   HttpPollerMm -> ThresholdMonitorCm   mm -> cm, mismatch (the B3 demo)
+#
+# Each component also carries the `rdfc:jsImplementationOf` triples a real
+# processor.ttl would. That class IRI is the join key used to attach these
+# contracts to a processor discovered from GitHub, and it lets the existing
+# config-form and pipeline-export machinery consume a component from this file
+# unchanged.
+
+@prefix sh:      <http://www.w3.org/ns/shacl#> .
+@prefix rdfs:    <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:     <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcat:    <http://www.w3.org/ns/dcat#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix tcs:     <https://w3id.org/toolchain#> .
+@prefix rdfc:    <https://w3id.org/rdf-connect#> .
+@prefix demo:    <https://dishacled.github.io/demo#> .
+
+
+#################################################################
+# Interface shapes
+#
+# Constant, shared by every component that speaks the unit. Identity of these
+# IRIs is what makes an output/input pair comparable; `sh:hasValue` is what
+# makes the comparison enforceable by an actual SHACL validation run.
+#################################################################
+
+demo:MeasurementsInCmShape a sh:NodeShape ;
+  rdfs:label "Measurements in cm" ;
+  sh:targetClass demo:Measurement ;
+  sh:property [
+    sh:path demo:unit ;
+    sh:name "unit" ;
+    sh:datatype xsd:string ;
+    sh:hasValue "cm" ;
+    sh:in ( "cm" ) ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:order 0 ;
+  ] , [
+    sh:path demo:value ;
+    sh:name "value" ;
+    sh:datatype xsd:decimal ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:order 1 ;
+  ] , [
+    sh:path demo:observedAt ;
+    sh:name "observedAt" ;
+    sh:datatype xsd:dateTime ;
+    sh:maxCount 1 ;
+    sh:order 2 ;
+  ] .
+
+demo:MeasurementsInMmShape a sh:NodeShape ;
+  rdfs:label "Measurements in mm" ;
+  sh:targetClass demo:Measurement ;
+  sh:property [
+    sh:path demo:unit ;
+    sh:name "unit" ;
+    sh:datatype xsd:string ;
+    sh:hasValue "mm" ;
+    sh:in ( "mm" ) ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:order 0 ;
+  ] , [
+    sh:path demo:value ;
+    sh:name "value" ;
+    sh:datatype xsd:decimal ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:order 1 ;
+  ] , [
+    sh:path demo:observedAt ;
+    sh:name "observedAt" ;
+    sh:datatype xsd:dateTime ;
+    sh:maxCount 1 ;
+    sh:order 2 ;
+  ] .
+
+
+#################################################################
+# threshold-monitor-cm
+#
+# The canonical spelling: `a dcat:Relationship` present, inline config shape,
+# IRI references for the interface shapes.
+#################################################################
+
+demo:ThresholdMonitorCm a tcs:PipelineComponent, dcat:DataService ;
+  rdfs:label "Threshold monitor (cm)" ;
+  rdfs:comment "Passes through centimetre measurements and flags the ones crossing a threshold." ;
+  rdfc:jsImplementationOf rdfc:Processor ;
+  rdfc:class "ThresholdMonitorCm" ;
+  rdfc:file <./dist/threshold-monitor-cm.js> ;
+  rdfc:entrypoint <./> ;
+  dcterms:conformsTo demo:MeasurementsInCmShape ;
+  dcat:qualifiedRelation [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:configShape ;
+    dcterms:relation [
+      a sh:NodeShape ;
+      sh:targetClass demo:ThresholdMonitorCm ;
+      sh:property [
+        sh:path demo:threshold ;
+        sh:name "threshold" ;
+        sh:datatype xsd:decimal ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 0 ;
+      ] , [
+        sh:path demo:direction ;
+        sh:name "direction" ;
+        sh:datatype xsd:string ;
+        sh:in ( "above" "below" ) ;
+        sh:maxCount 1 ;
+        sh:order 1 ;
+      ] , [
+        sh:path rdfc:input ;
+        sh:name "input" ;
+        sh:class rdfc:Reader ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 2 ;
+      ] , [
+        sh:path rdfc:output ;
+        sh:name "output" ;
+        sh:class rdfc:Writer ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 3 ;
+      ]
+    ]
+  ] , [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:inputShape ;
+    dcterms:relation demo:MeasurementsInCmShape ;
+  ] , [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:outputShape ;
+    dcterms:relation demo:MeasurementsInCmShape ;
+  ] .
+
+
+#################################################################
+# threshold-monitor-mm
+#
+# Same structure, but the relation nodes omit `a dcat:Relationship`. The
+# reference catalog omits it too, so the parser must not depend on it.
+#################################################################
+
+demo:ThresholdMonitorMm a tcs:PipelineComponent, dcat:DataService ;
+  rdfs:label "Threshold monitor (mm)" ;
+  rdfs:comment "Passes through millimetre measurements and flags the ones crossing a threshold." ;
+  rdfc:jsImplementationOf rdfc:Processor ;
+  rdfc:class "ThresholdMonitorMm" ;
+  rdfc:file <./dist/threshold-monitor-mm.js> ;
+  rdfc:entrypoint <./> ;
+  dcterms:conformsTo demo:MeasurementsInMmShape ;
+  dcat:qualifiedRelation [
+    dcat:hadRole tcs:configShape ;
+    dcterms:relation [
+      a sh:NodeShape ;
+      sh:targetClass demo:ThresholdMonitorMm ;
+      sh:property [
+        sh:path demo:threshold ;
+        sh:name "threshold" ;
+        sh:datatype xsd:decimal ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 0 ;
+      ] , [
+        sh:path demo:direction ;
+        sh:name "direction" ;
+        sh:datatype xsd:string ;
+        sh:in ( "above" "below" ) ;
+        sh:maxCount 1 ;
+        sh:order 1 ;
+      ] , [
+        sh:path rdfc:input ;
+        sh:name "input" ;
+        sh:class rdfc:Reader ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 2 ;
+      ] , [
+        sh:path rdfc:output ;
+        sh:name "output" ;
+        sh:class rdfc:Writer ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 3 ;
+      ]
+    ]
+  ] , [
+    dcat:hadRole tcs:inputShape ;
+    dcterms:relation demo:MeasurementsInMmShape ;
+  ] , [
+    dcat:hadRole tcs:outputShape ;
+    dcterms:relation demo:MeasurementsInMmShape ;
+  ] .
+
+
+#################################################################
+# http-poller-cm
+#################################################################
+
+demo:HttpPollerCm a tcs:PipelineComponent, dcat:DataService ;
+  rdfs:label "HTTP poller (cm)" ;
+  rdfs:comment "Polls an HTTP sensor endpoint and emits measurements in centimetres." ;
+  rdfc:jsImplementationOf rdfc:Processor ;
+  rdfc:class "HttpPollerCm" ;
+  rdfc:file <./dist/http-poller-cm.js> ;
+  rdfc:entrypoint <./> ;
+  dcterms:conformsTo demo:SensorReadingShape, demo:MeasurementsInCmShape ;
+  dcat:qualifiedRelation [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:configShape ;
+    dcterms:relation [
+      a sh:NodeShape ;
+      sh:targetClass demo:HttpPollerCm ;
+      sh:property [
+        sh:path rdfc:url ;
+        sh:name "url" ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 0 ;
+      ] , [
+        sh:path rdfc:interval ;
+        sh:name "pollInterval" ;
+        sh:datatype xsd:integer ;
+        sh:maxCount 1 ;
+        sh:order 1 ;
+      ] , [
+        sh:path rdfc:output ;
+        sh:name "output" ;
+        sh:class rdfc:Writer ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 2 ;
+      ]
+    ]
+  ] , [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:inputShape ;
+    dcterms:relation demo:SensorReadingShape ;
+  ] , [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:outputShape ;
+    dcterms:relation demo:MeasurementsInCmShape ;
+  ] .
+
+# The raw payload both pollers read off the wire, before it is typed as a
+# measurement in a specific unit. Referenced by IRI from http-poller-cm and
+# inlined as a blank node in http-poller-mm, so both spellings occur for real.
+demo:SensorReadingShape a sh:NodeShape ;
+  rdfs:label "Raw sensor reading" ;
+  sh:targetClass demo:SensorReading ;
+  sh:property [
+    sh:path demo:reading ;
+    sh:name "reading" ;
+    sh:datatype xsd:decimal ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:order 0 ;
+  ] , [
+    sh:path demo:sensorId ;
+    sh:name "sensorId" ;
+    sh:datatype xsd:string ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:order 1 ;
+  ] .
+
+
+#################################################################
+# http-poller-mm
+#
+# Its input shape is written inline as a blank node rather than referenced by
+# IRI -- the other shape form the parser has to handle.
+#################################################################
+
+demo:HttpPollerMm a tcs:PipelineComponent, dcat:DataService ;
+  rdfs:label "HTTP poller (mm)" ;
+  rdfs:comment "Polls an HTTP sensor endpoint and emits measurements in millimetres." ;
+  rdfc:jsImplementationOf rdfc:Processor ;
+  rdfc:class "HttpPollerMm" ;
+  rdfc:file <./dist/http-poller-mm.js> ;
+  rdfc:entrypoint <./> ;
+  dcterms:conformsTo demo:MeasurementsInMmShape ;
+  dcat:qualifiedRelation [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:configShape ;
+    dcterms:relation [
+      a sh:NodeShape ;
+      sh:targetClass demo:HttpPollerMm ;
+      sh:property [
+        sh:path rdfc:url ;
+        sh:name "url" ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 0 ;
+      ] , [
+        sh:path rdfc:interval ;
+        sh:name "pollInterval" ;
+        sh:datatype xsd:integer ;
+        sh:maxCount 1 ;
+        sh:order 1 ;
+      ] , [
+        sh:path rdfc:output ;
+        sh:name "output" ;
+        sh:class rdfc:Writer ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 2 ;
+      ]
+    ]
+  ] , [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:inputShape ;
+    dcterms:relation [
+      a sh:NodeShape ;
+      sh:targetClass demo:SensorReading ;
+      sh:property [
+        sh:path demo:reading ;
+        sh:name "reading" ;
+        sh:datatype xsd:decimal ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 0 ;
+      ] , [
+        sh:path demo:sensorId ;
+        sh:name "sensorId" ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 1 ;
+      ]
+    ]
+  ] , [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:outputShape ;
+    dcterms:relation demo:MeasurementsInMmShape ;
+  ] .
+
+
+#################################################################
+# Dataset -- output shape only
+#
+# A dataset produces data but consumes none, so it declares no input role and
+# no config shape.
+#################################################################
+
+demo:SensorFeedCm a dcat:Dataset ;
+  rdfs:label "Sensor feed (cm)" ;
+  rdfs:comment "Recorded feed of centimetre measurements, replayable as a pipeline source." ;
+  dcterms:conformsTo demo:MeasurementsInCmShape ;
+  dcat:qualifiedRelation [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:outputShape ;
+    dcterms:relation demo:MeasurementsInCmShape ;
+  ] .
