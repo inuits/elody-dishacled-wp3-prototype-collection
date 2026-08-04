@@ -2,6 +2,11 @@ import re
 
 from rdflib import BNode, Graph, Literal, Namespace, RDF, URIRef
 
+from apps.dishacled.pipeline.connections import (
+    connections_for_pipeline,
+    nest_metadata,
+)
+
 RDFC = Namespace("https://w3id.org/rdf-connect#")
 
 RUNTIME_TO_RUNNER = {
@@ -18,29 +23,6 @@ CHANNEL_CLASSES = {RDFC.Reader, RDFC.Writer, RDFC.Channel}
 
 def _slugify(value):
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-
-
-def _nest_metadata(metadata):
-    """Flat dotted-key metadata -> nested dict.
-
-    [{"key": "options.auth.type", "value": "bearer"}]
-        -> {"options": {"auth": {"type": "bearer"}}}
-    """
-    result = {}
-    for item in metadata:
-        key = item.get("key")
-        if not key:
-            continue
-        parts = key.split(".")
-        cursor = result
-        for part in parts[:-1]:
-            nxt = cursor.get(part)
-            if not isinstance(nxt, dict):
-                nxt = {}
-                cursor[part] = nxt
-            cursor = nxt
-        cursor[parts[-1]] = item.get("value")
-    return result
 
 
 def _get_metadata_value(entity, key):
@@ -159,6 +141,7 @@ class PipelineTtlSerializer:
 
         runner_groups = {}  # runner class URIRef -> [stage URIRef]
         channels = set()
+        stages = {}  # processor key -> (stage URIRef, _ShapeIndex)
 
         for relation in pipeline.get("relations", []):
             if relation.get("type") != "hasProcessor":
@@ -177,22 +160,29 @@ class PipelineTtlSerializer:
 
             stage_uri = self._stage_uri(processor)
             g.add((stage_uri, RDF.type, shape.target_class))
+            stages[relation["key"]] = (stage_uri, shape)
 
-            runner = RUNTIME_TO_RUNNER.get(
-                _get_metadata_value(processor, "runtime"), RDFC.NodeRunner
-            )
-            runner_groups.setdefault(runner, []).append(stage_uri)
+            # A dataset is a source of data, not an implementation, so it is
+            # emitted as a stage that can be wired but is never handed to a
+            # runner to instantiate.
+            if (processor.get("data") or {}).get("componentKind") != "dataset":
+                runner = RUNTIME_TO_RUNNER.get(
+                    _get_metadata_value(processor, "runtime"), RDFC.NodeRunner
+                )
+                runner_groups.setdefault(runner, []).append(stage_uri)
 
             # Flat dotted-key metadata (url, options.method, options.auth.type)
             # -> nested value dict, then emit following the (nested) shape.
-            values = _nest_metadata(relation.get("metadata", []))
+            values = nest_metadata(relation.get("metadata", []))
             self._emit_values(g, stage_uri, shape, values, channels)
 
-        for runner, stages in runner_groups.items():
+        self._emit_connections(g, pipeline, processors, stages, channels)
+
+        for runner, stages_of_runner in runner_groups.items():
             group = BNode()
             g.add((pipeline_uri, RDFC.consistsOf, group))
             g.add((group, RDFC.instantiates, runner))
-            for stage in stages:
+            for stage in stages_of_runner:
                 g.add((group, RDFC.processor, stage))
 
         for channel_uri in channels:
@@ -200,6 +190,37 @@ class PipelineTtlSerializer:
             g.add((channel_uri, RDF.type, RDFC.Writer))
 
         return g.serialize(format="turtle")
+
+    def _emit_connections(self, g, pipeline, processors, stages, channels):
+        """Bind each declared connection's two ports to one shared channel.
+
+        The connection is authoritative: a channel value typed into the config
+        form by hand is replaced, so the exported pipeline always reflects the
+        links the user drew rather than two names that may have drifted apart.
+        """
+        for connection in connections_for_pipeline(pipeline, processors):
+            source = stages.get(connection.source)
+            target = stages.get(connection.target)
+            if not source or not target:
+                continue
+
+            source_uri, source_shape = source
+            target_uri, target_shape = target
+            source_path = (source_shape.properties.get(connection.source_port) or {}).get(
+                "path"
+            )
+            target_path = (target_shape.properties.get(connection.target_port) or {}).get(
+                "path"
+            )
+            if source_path is None or target_path is None:
+                continue
+
+            channel_uri = URIRef(self.base_uri + _slugify(connection.channel))
+            g.remove((source_uri, source_path, None))
+            g.add((source_uri, source_path, channel_uri))
+            g.remove((target_uri, target_path, None))
+            g.add((target_uri, target_path, channel_uri))
+            channels.add(channel_uri)
 
     def _emit_values(self, g, subject, shape, values, channels):
         """Emit one shape's values onto `subject`, recursing into nested nodes."""

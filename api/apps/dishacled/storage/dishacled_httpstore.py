@@ -5,6 +5,7 @@ import requests
 import requests_cache
 from rdflib import Graph
 
+from apps.dishacled.pipeline.connections import ports_for_component
 from apps.dishacled.shacl.parser import ShaclParser
 from apps.dishacled.shacl.contracts import ContractCatalog, component_iri_from_ttl
 from apps.dishacled.shacl.form import (
@@ -204,6 +205,11 @@ class DishacledHttpStorageManager(HttpStorageManager):
                     "rawTtl": raw_ttl,
                     **self._contract_overlay(raw_ttl),
                 }
+                # ports are derived from the two above: the channel-typed
+                # config properties named by the shape, typed by the contract
+                prepared["data"]["ports"] = [
+                    port.to_dict() for port in ports_for_component(prepared)
+                ]
 
         return prepared
 

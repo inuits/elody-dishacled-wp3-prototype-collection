@@ -10,6 +10,7 @@ Two things keep them distinguishable from real repositories: the `local--` id
 prefix and a `source: contracts` metadata entry.
 """
 
+from apps.dishacled.pipeline.connections import ports_for_component
 from apps.dishacled.shacl.contracts import (
     ComponentContract,
     ContractCatalog,
@@ -63,7 +64,7 @@ class LocalComponentSource:
             else []
         )
 
-        return {
+        document = {
             "_id": contract.local_id,
             "identifiers": [contract.local_id, contract.iri],
             "type": "githubProcessor",
@@ -86,3 +87,7 @@ class LocalComponentSource:
                 **contract.to_data(),
             },
         }
+        document["data"]["ports"] = [
+            port.to_dict() for port in ports_for_component(document)
+        ]
+        return document

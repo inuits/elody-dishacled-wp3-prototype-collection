@@ -36,6 +36,7 @@ from pathlib import Path
 
 from rdflib import BNode, Graph, Literal, Namespace, RDF, RDFS, URIRef
 
+from apps.dishacled.pipeline.connections import DATASET_OUTPUT_PORT
 from apps.dishacled.shacl.parser import ShaclParser, ShaclProperty
 
 
@@ -260,6 +261,21 @@ class ComponentContract:
                 config.add((shape, SH.targetClass, subject))
                 break
             graph += config
+        elif self.output_shape:
+            # A dataset has no config shape and therefore no writer property to
+            # hang a channel off. Give it the one port its output role implies,
+            # so it can be connected to a consumer and exported like any other
+            # stage. `DATASET_OUTPUT_PORT` names the same port the connection
+            # model synthesises.
+            shape = BNode()
+            port = BNode()
+            graph.add((shape, RDF.type, SH.NodeShape))
+            graph.add((shape, SH.targetClass, subject))
+            graph.add((shape, SH.property, port))
+            graph.add((port, SH.path, RDFC[DATASET_OUTPUT_PORT]))
+            graph.add((port, SH.name, Literal(DATASET_OUTPUT_PORT)))
+            graph.add((port, SH["class"], RDFC.Writer))
+            graph.add((port, SH.minCount, Literal(1)))
 
         return graph.serialize(format="turtle")
 

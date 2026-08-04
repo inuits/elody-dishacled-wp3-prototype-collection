@@ -488,3 +488,231 @@ class TestNestedConfig:
         g = self._graph()
         stage = URIRef(BASE + "http-fetch")
         assert g.value(stage, RDFC.writer) == URIRef(BASE + "out-channel")
+
+
+CM_SHAPE_IRI = "https://elody.local/dishacled/demo#MeasurementsInCmShape"
+
+
+def with_ports(processor, properties, input_shape=None, output_shape=None):
+    """Give a processor fixture the contract data the connection model reads."""
+    data = dict(processor["data"])
+    data["properties"] = properties
+    data["componentKind"] = "component"
+    if input_shape:
+        data["inputShape"] = {"iri": input_shape, "label": "in", "ttl": "", "properties": []}
+    if output_shape:
+        data["outputShape"] = {"iri": output_shape, "label": "out", "ttl": "", "properties": []}
+    return {**processor, "data": data}
+
+
+def port(name, class_ref):
+    return {
+        "name": name,
+        "inputFieldType": "baseTextField",
+        "isRequired": True,
+        "inValues": [],
+        "classRef": class_ref,
+    }
+
+
+CONNECTED_PROCESSORS = {
+    "rdfc--ldes-client": with_ports(
+        LDES_PROCESSOR,
+        [port("writer", "rdfc:Writer")],
+        output_shape=CM_SHAPE_IRI,
+    ),
+    "rdfc--log-processor-ts": with_ports(
+        LOG_PROCESSOR,
+        [port("reader", "rdfc:Reader")],
+        input_shape=CM_SHAPE_IRI,
+    ),
+}
+
+
+class TestConnections:
+    """A connection wires two stages onto one channel, over the config values."""
+
+    def _graph(self, relations, processors=None):
+        serializer = PipelineTtlSerializer(base_uri=BASE)
+        ttl = serializer.serialize(
+            make_pipeline(relations), processors or CONNECTED_PROCESSORS
+        )
+        g = Graph()
+        g.parse(data=ttl, format="turtle")
+        return g
+
+    CONNECTED = [
+        {"key": "rdfc--ldes-client", "type": "hasProcessor", "metadata": []},
+        {
+            "key": "rdfc--log-processor-ts",
+            "type": "hasProcessor",
+            "metadata": [
+                {
+                    "key": "connections.reader.from",
+                    "value": "rdfc--ldes-client|writer",
+                }
+            ],
+        },
+    ]
+
+    def test_producer_writes_to_the_connection_channel(self):
+        g = self._graph(self.CONNECTED)
+        channel = URIRef(BASE + "ldes-client-writer-to-log-processor-ts-reader")
+        assert g.value(URIRef(BASE + "ldes-client"), RDFC.writer) == channel
+
+    def test_consumer_reads_from_the_same_channel(self):
+        g = self._graph(self.CONNECTED)
+        channel = URIRef(BASE + "ldes-client-writer-to-log-processor-ts-reader")
+        assert g.value(URIRef(BASE + "log-processor-ts"), RDFC.reader) == channel
+
+    def test_connection_channel_is_declared(self):
+        g = self._graph(self.CONNECTED)
+        channel = URIRef(BASE + "ldes-client-writer-to-log-processor-ts-reader")
+        assert (channel, RDF.type, RDFC.Reader) in g
+        assert (channel, RDF.type, RDFC.Writer) in g
+
+    def test_an_explicit_channel_name_is_used(self):
+        relations = [
+            {"key": "rdfc--ldes-client", "type": "hasProcessor", "metadata": []},
+            {
+                "key": "rdfc--log-processor-ts",
+                "type": "hasProcessor",
+                "metadata": [
+                    {
+                        "key": "connections.reader.from",
+                        "value": "rdfc--ldes-client|writer",
+                    },
+                    {"key": "connections.reader.channel", "value": "measurements"},
+                ],
+            },
+        ]
+        g = self._graph(relations)
+        channel = URIRef(BASE + "measurements")
+        assert g.value(URIRef(BASE + "ldes-client"), RDFC.writer) == channel
+        assert g.value(URIRef(BASE + "log-processor-ts"), RDFC.reader) == channel
+
+    def test_connection_replaces_a_stale_hand_entered_channel(self):
+        relations = [
+            {
+                "key": "rdfc--ldes-client",
+                "type": "hasProcessor",
+                "metadata": [{"key": "writer", "value": "old channel"}],
+            },
+            {
+                "key": "rdfc--log-processor-ts",
+                "type": "hasProcessor",
+                "metadata": [
+                    {"key": "reader", "value": "old channel"},
+                    {
+                        "key": "connections.reader.from",
+                        "value": "rdfc--ldes-client|writer",
+                    },
+                ],
+            },
+        ]
+        g = self._graph(relations)
+        stage = URIRef(BASE + "ldes-client")
+        assert list(g.objects(stage, RDFC.writer)) == [
+            URIRef(BASE + "ldes-client-writer-to-log-processor-ts-reader")
+        ]
+
+    def test_config_values_survive_a_connection(self):
+        relations = [
+            {
+                "key": "rdfc--ldes-client",
+                "type": "hasProcessor",
+                "metadata": [
+                    {"key": "url", "value": "https://ldes.example.org/feed"}
+                ],
+            },
+            self.CONNECTED[1],
+        ]
+        g = self._graph(relations)
+        assert g.value(URIRef(BASE + "ldes-client"), RDFC.url) == Literal(
+            "https://ldes.example.org/feed"
+        )
+
+    def test_an_unconnected_pipeline_is_unchanged(self):
+        g = self._graph(
+            [{"key": "rdfc--ldes-client", "type": "hasProcessor", "metadata": []}]
+        )
+        assert g.value(URIRef(BASE + "ldes-client"), RDFC.writer) is None
+
+    def test_connection_to_a_missing_stage_is_skipped(self):
+        relations = [
+            {
+                "key": "rdfc--log-processor-ts",
+                "type": "hasProcessor",
+                "metadata": [
+                    {
+                        "key": "connections.reader.from",
+                        "value": "rdfc--ldes-client|writer",
+                    }
+                ],
+            }
+        ]
+        g = self._graph(relations)
+        assert g.value(URIRef(BASE + "log-processor-ts"), RDFC.reader) is None
+
+
+class TestDatasetSource:
+    """A catalog dataset can feed a service without becoming a runner stage."""
+
+    def _graph(self):
+        from apps.dishacled.storage.local_component_source import (
+            LocalComponentSource,
+        )
+
+        components = {
+            d["_id"]: d for d in LocalComponentSource().list_documents()
+        }
+        components["rdfc--log-processor-ts"] = with_ports(
+            LOG_PROCESSOR,
+            [port("reader", "rdfc:Reader")],
+            input_shape=CM_SHAPE_IRI,
+        )
+        pipeline = make_pipeline(
+            [
+                {
+                    "key": "local--sensor-feed-cm",
+                    "type": "hasProcessor",
+                    "metadata": [],
+                },
+                {
+                    "key": "rdfc--log-processor-ts",
+                    "type": "hasProcessor",
+                    "metadata": [
+                        {
+                            "key": "connections.reader.from",
+                            "value": "local--sensor-feed-cm|output",
+                        }
+                    ],
+                },
+            ]
+        )
+        serializer = PipelineTtlSerializer(base_uri=BASE)
+        g = Graph()
+        g.parse(
+            data=serializer.serialize(pipeline, components), format="turtle"
+        )
+        return g
+
+    def test_dataset_stage_writes_to_the_connection_channel(self):
+        g = self._graph()
+        channel = URIRef(
+            BASE + "sensor-feed-cm-output-to-log-processor-ts-reader"
+        )
+        assert g.value(URIRef(BASE + "sensor-feed-cm"), RDFC.output) == channel
+
+    def test_consumer_reads_the_dataset_channel(self):
+        g = self._graph()
+        channel = URIRef(
+            BASE + "sensor-feed-cm-output-to-log-processor-ts-reader"
+        )
+        assert g.value(URIRef(BASE + "log-processor-ts"), RDFC.reader) == channel
+
+    def test_dataset_is_not_instantiated_as_a_runner_stage(self):
+        g = self._graph()
+        stages = set(g.objects(None, RDFC.processor))
+        assert URIRef(BASE + "sensor-feed-cm") not in stages
+        assert URIRef(BASE + "log-processor-ts") in stages
