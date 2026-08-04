@@ -1,4 +1,6 @@
 import base64
+import json
+import tomllib
 from os import getenv
 
 import requests
@@ -18,6 +20,14 @@ from configuration import get_object_configuration_mapper
 from serialization.serialize import serialize
 
 CACHE_LOCATION = getenv("CACHE_LOCATION", "/tmp/dishacled_http_store-cache")
+
+# Package-manager IRIs the toolchain pipeline generator routes on: `:npm` rows
+# land in the generated package.json, `:pip` rows in pyproject.toml, and
+# anything else is dropped from both.
+NPM_SUPPLIER = "http://example.org/example/npm"
+PIP_SUPPLIER = "http://example.org/example/pip"
+
+EMPTY_DEPLOYMENT = {"imports": [], "packages": []}
 
 
 def _is_valid_turtle(content: str) -> bool:
@@ -176,14 +186,18 @@ class DishacledHttpStorageManager(HttpStorageManager):
             # Repos may contain TTL files that are not valid standalone
             # turtle (test fixtures, doc snippets). Keep only files that
             # parse, so rawTtl (their concatenation) stays parseable for the
-            # form derivation and the pipeline TTL export.
-            contents = [
-                content
-                for content in (
-                    self._fetch_ttl_content(repo, ttl_path) for ttl_path in ttl_files
+            # form derivation and the pipeline TTL export. The path travels
+            # with the content because the export needs to name the file an
+            # import points at, not just its triples.
+            ttl_documents = [
+                (ttl_path, content)
+                for ttl_path, content in (
+                    (ttl_path, self._fetch_ttl_content(repo, ttl_path))
+                    for ttl_path in ttl_files
                 )
                 if content and _is_valid_turtle(content)
             ]
+            contents = [content for _, content in ttl_documents]
             prop_objects = self._parse_shacl_property_objects(contents)
             if prop_objects:
                 raw_ttl = "\n".join(contents)
@@ -203,6 +217,7 @@ class DishacledHttpStorageManager(HttpStorageManager):
                     "properties": self._parse_shacl_contents(contents),
                     "formFields": form_fields,
                     "rawTtl": raw_ttl,
+                    "deployment": self._deployment(repo, ttl_documents),
                     **self._contract_overlay(raw_ttl),
                 }
                 # ports are derived from the two above: the channel-typed
@@ -224,7 +239,78 @@ class DishacledHttpStorageManager(HttpStorageManager):
             contract = ContractCatalog.default().get(component_iri_from_ttl(raw_ttl))
         except Exception:
             return {}
-        return contract.to_data() if contract else {}
+        if not contract:
+            return {}
+        data = contract.to_data()
+        if data.get("deployment") == EMPTY_DEPLOYMENT:
+            # A curated contract overrides what the repository says, but only
+            # where it actually says something -- otherwise a catalog entry
+            # without coordinates would erase the ones we just read.
+            data.pop("deployment")
+        return data
+
+    def _deployment(self, repo, ttl_documents):
+        """Where this processor is installed from, read off the repository.
+
+        The pipeline generator turns `spdx:Package` into a `package.json` /
+        `pyproject.toml` entry and follows `owl:imports` to find the processor
+        definition at start-up. Neither is in the SHACL file, so both come
+        from the repository's own manifest.
+        """
+        package = self._package_from_manifest(repo)
+        if not package:
+            return dict(EMPTY_DEPLOYMENT)
+
+        imports = []
+        if package["supplier"] == NPM_SUPPLIER:
+            # An npm package publishes its TTL at the same path the repository
+            # holds it at (verified against the published @rdfc tarballs), so
+            # the repo-relative path is also the in-package one. Only files
+            # that actually declare a processor are imported -- a repository's
+            # test fixtures and doc snippets are not processor definitions.
+            imports = [
+                f"./node_modules/{package['name']}/{path}"
+                for path, content in ttl_documents
+                if component_iri_from_ttl(content)
+            ]
+        # A Python package's install location depends on the interpreter
+        # version baked into the image, which is not knowable from here, so no
+        # import is synthesised for pip.
+
+        return {"imports": imports, "packages": [package]}
+
+    def _package_from_manifest(self, repo):
+        try:
+            manifest = self._fetch_ttl_content(repo, "package.json")
+            if manifest:
+                data = json.loads(manifest)
+                name, version = data.get("name"), data.get("version")
+                if name:
+                    return {
+                        "name": name,
+                        # the generator writes npm versions verbatim into
+                        # package.json, so the range operator belongs here
+                        "version": f"^{version}" if version else None,
+                        "supplier": NPM_SUPPLIER,
+                    }
+
+            manifest = self._fetch_ttl_content(repo, "pyproject.toml")
+            if manifest:
+                project = tomllib.loads(manifest).get("project") or {}
+                name, version = project.get("name"), project.get("version")
+                if name:
+                    return {
+                        "name": name,
+                        # pyproject entries are emitted as `<name><version>`,
+                        # so the version has to carry its own operator
+                        "version": f">={version}" if version else None,
+                        "supplier": PIP_SUPPLIER,
+                    }
+        except Exception:
+            # an unreadable or malformed manifest leaves the component without
+            # coordinates; it must not take the whole lookup down
+            return None
+        return None
 
     def _fetch_ttl_content(self, repo, file_path):
         owner = repo.get("owner", {}).get("login", "")

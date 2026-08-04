@@ -35,9 +35,32 @@
 @prefix xsd:     <http://www.w3.org/2001/XMLSchema#> .
 @prefix dcat:    <http://www.w3.org/ns/dcat#> .
 @prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix owl:     <http://www.w3.org/2002/07/owl#> .
+@prefix spdx:    <http://spdx.org/rdf/terms#> .
 @prefix tcs:     <https://w3id.org/toolchain#> .
 @prefix rdfc:    <https://w3id.org/rdf-connect#> .
 @prefix demo:    <https://dishacled.github.io/demo#> .
+@prefix :        <http://example.org/example/> .
+
+
+#################################################################
+# Deployment coordinates
+#
+# Shapes describe how a component is configured and connected; they say
+# nothing about how to obtain it. The toolchain pipeline generator needs the
+# second half too: `spdx:Package` becomes an entry in the generated
+# package.json / pyproject.toml, and `owl:imports` is what the RDF-Connect
+# runner follows to locate the processor definition at start-up.
+#
+# The `:npm` / `:pip` supplier IRIs are the ones the reference catalog uses
+# (`http://example.org/example/`); the generator routes packages to a manifest
+# file by matching on exactly those.
+#
+# PLACEHOLDER: the demo components below have no published package. The
+# coordinates are shaped correctly and route correctly, but installing them
+# will fail until the components are actually released -- an exported pipeline
+# that includes one needs its coordinates replaced before `docker compose up`.
+#################################################################
 
 
 #################################################################
@@ -117,6 +140,13 @@ demo:ThresholdMonitorCm a tcs:PipelineComponent, dcat:DataService ;
   rdfc:class "ThresholdMonitorCm" ;
   rdfc:file <./dist/threshold-monitor-cm.js> ;
   rdfc:entrypoint <./> ;
+  owl:imports <./node_modules/@dishacled/demo-processors/processors.ttl> ;
+  dcterms:requires [
+    a spdx:Package ;
+    spdx:name "@dishacled/demo-processors" ;
+    spdx:versionInfo "^0.1.0" ;
+    spdx:suppliedBy :npm ;
+  ] ;
   dcterms:conformsTo demo:MeasurementsInCmShape ;
   dcat:qualifiedRelation [
     a dcat:Relationship ;
@@ -179,6 +209,13 @@ demo:ThresholdMonitorMm a tcs:PipelineComponent, dcat:DataService ;
   rdfc:class "ThresholdMonitorMm" ;
   rdfc:file <./dist/threshold-monitor-mm.js> ;
   rdfc:entrypoint <./> ;
+  owl:imports <./node_modules/@dishacled/demo-processors/processors.ttl> ;
+  dcterms:requires [
+    a spdx:Package ;
+    spdx:name "@dishacled/demo-processors" ;
+    spdx:versionInfo "^0.1.0" ;
+    spdx:suppliedBy :npm ;
+  ] ;
   dcterms:conformsTo demo:MeasurementsInMmShape ;
   dcat:qualifiedRelation [
     dcat:hadRole tcs:configShape ;
@@ -235,6 +272,13 @@ demo:HttpPollerCm a tcs:PipelineComponent, dcat:DataService ;
   rdfc:class "HttpPollerCm" ;
   rdfc:file <./dist/http-poller-cm.js> ;
   rdfc:entrypoint <./> ;
+  owl:imports <./node_modules/@dishacled/demo-processors/processors.ttl> ;
+  dcterms:requires [
+    a spdx:Package ;
+    spdx:name "@dishacled/demo-processors" ;
+    spdx:versionInfo "^0.1.0" ;
+    spdx:suppliedBy :npm ;
+  ] ;
   dcterms:conformsTo demo:SensorReadingShape, demo:MeasurementsInCmShape ;
   dcat:qualifiedRelation [
     a dcat:Relationship ;
@@ -311,6 +355,13 @@ demo:HttpPollerMm a tcs:PipelineComponent, dcat:DataService ;
   rdfc:class "HttpPollerMm" ;
   rdfc:file <./dist/http-poller-mm.js> ;
   rdfc:entrypoint <./> ;
+  owl:imports <./node_modules/@dishacled/demo-processors/processors.ttl> ;
+  dcterms:requires [
+    a spdx:Package ;
+    spdx:name "@dishacled/demo-processors" ;
+    spdx:versionInfo "^0.1.0" ;
+    spdx:suppliedBy :npm ;
+  ] ;
   dcterms:conformsTo demo:MeasurementsInMmShape ;
   dcat:qualifiedRelation [
     a dcat:Relationship ;

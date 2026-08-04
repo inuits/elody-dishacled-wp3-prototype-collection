@@ -467,3 +467,104 @@ class TestBundledContractsFixture:
         assert data["inputShape"] is None
         assert data["configShape"] is None
         assert data["outputShape"]["iri"] == self.CM_SHAPE
+
+
+class TestDeploymentCoordinates:
+    """Where a component's implementation is fetched from, and what runs it.
+
+    The toolchain pipeline generator needs more than shapes to build a project:
+    it has to know which package to install (`spdx:Package`) and which file to
+    import so the runner can find the processor (`owl:imports`). Those live on
+    the component in the catalog because they are not derivable from anything
+    else we hold.
+    """
+
+    DEPLOYABLE = (
+        PREFIXES
+        + """
+demo:Poller a tcs:PipelineComponent;
+  rdfs:label "Poller";
+  owl:imports <./node_modules/@acme/processors/processors.ttl>;
+  dcterms:requires [
+    a spdx:Package;
+    spdx:name "@acme/processors";
+    spdx:versionInfo "^1.2.3";
+    spdx:suppliedBy <http://example.org/example/npm>;
+  ];
+  dcat:qualifiedRelation [
+    dcat:hadRole tcs:outputShape; dcterms:relation demo:CmShape
+  ].
+"""
+        + MEASUREMENT_SHAPES
+    )
+
+    def contract(self):
+        extra = "@prefix owl: <http://www.w3.org/2002/07/owl#>.\n@prefix spdx: <http://spdx.org/rdf/terms#>.\n"
+        return ContractCatalog.from_ttl(extra + self.DEPLOYABLE).get(
+            "https://dishacled.github.io/demo#Poller"
+        )
+
+    def test_imports_are_read(self):
+        assert self.contract().deployment.imports == (
+            "./node_modules/@acme/processors/processors.ttl",
+        )
+
+    def test_package_name_and_version_are_read(self):
+        package = self.contract().deployment.packages[0]
+        assert package.name == "@acme/processors"
+        assert package.version == "^1.2.3"
+
+    def test_package_supplier_is_read(self):
+        package = self.contract().deployment.packages[0]
+        assert package.supplier == "http://example.org/example/npm"
+
+    def test_a_component_without_coordinates_has_an_empty_deployment(self):
+        catalog = ContractCatalog.from_ttl(CONTRACT_WITH_ALL_ROLES)
+        contract = catalog.get(MONITOR_CM)
+        assert contract.deployment.imports == ()
+        assert contract.deployment.packages == ()
+
+    def test_deployment_travels_on_the_entity_data(self):
+        data = self.contract().to_data()
+        assert data["deployment"]["imports"] == [
+            "./node_modules/@acme/processors/processors.ttl"
+        ]
+        assert data["deployment"]["packages"][0]["name"] == "@acme/processors"
+
+
+class TestBundledDeploymentCoordinates:
+    """The shipped demo components must be installable by the generator."""
+
+    def components(self):
+        return [
+            c
+            for c in ContractCatalog.from_file(DEFAULT_CONTRACTS_PATH).all()
+            if c.kind == "component"
+        ]
+
+    def test_every_component_declares_an_import(self):
+        for contract in self.components():
+            assert contract.deployment.imports, contract.iri
+
+    def test_every_component_declares_a_package(self):
+        for contract in self.components():
+            assert contract.deployment.packages, contract.iri
+
+    def test_packages_are_routed_to_a_manager_the_generator_knows(self):
+        # RdfcDockerFileCompiler routes on spdx:suppliedBy; anything other than
+        # :pip / :npm is silently dropped from both manifest files.
+        known = {
+            "http://example.org/example/npm",
+            "http://example.org/example/pip",
+        }
+        for contract in self.components():
+            for package in contract.deployment.packages:
+                assert package.supplier in known, contract.iri
+
+    def test_a_dataset_needs_no_deployment_coordinates(self):
+        dataset = next(
+            c
+            for c in ContractCatalog.from_file(DEFAULT_CONTRACTS_PATH).all()
+            if c.kind == "dataset"
+        )
+        assert dataset.deployment.packages == ()

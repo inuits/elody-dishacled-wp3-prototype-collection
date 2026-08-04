@@ -45,6 +45,8 @@ DCAT = Namespace("http://www.w3.org/ns/dcat#")
 DCT = Namespace("http://purl.org/dc/terms/")
 TCS = Namespace("https://w3id.org/toolchain#")
 RDFC = Namespace("https://w3id.org/rdf-connect#")
+OWL = Namespace("http://www.w3.org/2002/07/owl#")
+SPDX = Namespace("http://spdx.org/rdf/terms#")
 
 
 # --------------------------------------------------------------------------
@@ -88,6 +90,13 @@ COMMENT_PREDICATES = (
 LOCAL_ID_PREFIX = "local--"
 
 DEFAULT_CONTRACTS_PATH = Path(__file__).parent / "catalog" / "contracts.ttl"
+
+# `owl:imports <./node_modules/...>` is deliberately relative: the toolchain
+# generator resolves it against the location the pipeline is mounted at inside
+# the container, which we cannot know here. rdflib resolves relative IRIs at
+# parse time, so the catalog is parsed against a fixed base that can be
+# stripped back off again -- keeping the relative form intact end to end.
+CATALOG_BASE = "https://dishacled.github.io/catalog/"
 
 
 def _local_name(uri) -> str:
@@ -139,7 +148,7 @@ def _first_value(g: Graph, subject, predicates):
     return None
 
 
-def _extract_shape_graph(g: Graph, node) -> Graph:
+def extract_shape_graph(g: Graph, node) -> Graph:
     """Copy a shape out of the catalog as a self-contained graph.
 
     Concise-bounded-description style: every triple on `node`, recursing into
@@ -206,6 +215,75 @@ class ShapeRef:
 
 
 @dataclass(frozen=True)
+class PackageRef:
+    """One installable dependency of a component."""
+
+    name: str
+    version: str | None = None
+    # IRI of the package manager that supplies it. The toolchain pipeline
+    # generator routes on this: `:npm` lands in package.json, `:pip` in
+    # pyproject.toml, anything else is dropped from both.
+    supplier: str | None = None
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "version": self.version, "supplier": self.supplier}
+
+
+@dataclass(frozen=True)
+class Deployment:
+    """Where a component's implementation comes from.
+
+    Shapes say how to configure and connect a component; this says how to
+    actually obtain and load it, which is what a build tool needs. Neither
+    piece is derivable from the other, and neither is derivable from the
+    repository metadata, so both are declared in the catalog.
+    """
+
+    imports: tuple[str, ...] = ()
+    packages: tuple[PackageRef, ...] = ()
+
+    def to_dict(self) -> dict:
+        return {
+            "imports": list(self.imports),
+            "packages": [package.to_dict() for package in self.packages],
+        }
+
+
+def _relativise(iri) -> str:
+    """Undo the parse-time resolution of a relative `owl:imports`."""
+    value = str(iri)
+    if value.startswith(CATALOG_BASE):
+        return "./" + value[len(CATALOG_BASE) :]
+    return value
+
+
+def _deployment_for(g: Graph, subject) -> Deployment:
+    imports = tuple(sorted(_relativise(o) for o in g.objects(subject, OWL.imports)))
+
+    packages = []
+    for required in g.objects(subject, DCT.requires):
+        if (required, RDF.type, SPDX.Package) not in g:
+            # a required *component* (a runner, another service); the pipeline
+            # definition derives those from the runtime instead
+            continue
+        name = g.value(required, SPDX.name)
+        if name is None:
+            continue
+        version = g.value(required, SPDX.versionInfo)
+        supplier = g.value(required, SPDX.suppliedBy)
+        packages.append(
+            PackageRef(
+                name=str(name),
+                version=str(version) if version is not None else None,
+                supplier=str(supplier) if supplier is not None else None,
+            )
+        )
+    return Deployment(
+        imports=imports, packages=tuple(sorted(packages, key=lambda p: p.name))
+    )
+
+
+@dataclass(frozen=True)
 class ComponentContract:
     iri: str
     label: str | None
@@ -214,6 +292,7 @@ class ComponentContract:
     config_shape: ShapeRef | None
     input_shape: ShapeRef | None
     output_shape: ShapeRef | None
+    deployment: Deployment = Deployment()
 
     @property
     def local_id(self) -> str:
@@ -227,6 +306,7 @@ class ComponentContract:
             "configShape": self.config_shape.to_dict() if self.config_shape else None,
             "inputShape": self.input_shape.to_dict() if self.input_shape else None,
             "outputShape": self.output_shape.to_dict() if self.output_shape else None,
+            "deployment": self.deployment.to_dict(),
         }
 
     def to_raw_ttl(self) -> str:
@@ -291,7 +371,7 @@ class ContractCatalog:
     def from_ttl(cls, ttl_string: str) -> "ContractCatalog":
         graph = Graph()
         try:
-            graph.parse(data=ttl_string, format="turtle")
+            graph.parse(data=ttl_string, format="turtle", publicID=CATALOG_BASE)
         except Exception:
             # an unparseable catalog must not take the whole request down;
             # components simply carry no contract
@@ -348,6 +428,7 @@ class ContractCatalog:
                     config_shape=shapes["config"],
                     input_shape=shapes["input"],
                     output_shape=shapes["output"],
+                    deployment=_deployment_for(g, subject),
                 )
             )
         return contracts
@@ -369,7 +450,7 @@ class ContractCatalog:
             return ShapeRef(
                 role=role,
                 iri=str(shape_node) if isinstance(shape_node, URIRef) else None,
-                ttl=_extract_shape_graph(g, shape_node).serialize(format="turtle"),
+                ttl=extract_shape_graph(g, shape_node).serialize(format="turtle"),
                 label=_first_value(g, shape_node, LABEL_PREDICATES),
             )
         return None

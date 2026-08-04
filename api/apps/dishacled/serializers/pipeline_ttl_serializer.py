@@ -121,6 +121,45 @@ class _ShapeIndex:
         return cls(target_class, properties)
 
 
+def emit_config_values(g, subject, shape, values, base_uri, channels):
+    """Emit one shape's config values onto `subject`, recursing into nested nodes.
+
+    Shared by both exports: the RDF-Connect pipeline puts these directly on the
+    stage, the toolchain pipeline definition puts them inside a `tcs:embedded`
+    block, but the mapping from a form value to a predicate, a datatype and a
+    channel IRI is the same in either case.
+    """
+    for name, binding in shape.properties.items():
+        if name not in values:
+            continue
+        value = values[name]
+
+        if binding["nested"] is not None:
+            if not isinstance(value, dict):
+                continue
+            nested_node = BNode()
+            emit_config_values(
+                g, nested_node, binding["nested"], value, base_uri, channels
+            )
+            # only attach if the nested node carries any triples
+            if next(g.predicate_objects(nested_node), None) is not None:
+                g.add((subject, binding["path"], nested_node))
+            continue
+
+        if value in (None, ""):
+            continue
+
+        if binding["class"] in CHANNEL_CLASSES:
+            channel_uri = URIRef(base_uri + _slugify(value))
+            g.add((subject, binding["path"], channel_uri))
+            channels.add(channel_uri)
+        else:
+            datatype = binding["datatype"]
+            if datatype == XSD_STRING:
+                datatype = None  # plain literal, identical in RDF 1.1
+            g.add((subject, binding["path"], Literal(value, datatype=datatype)))
+
+
 class PipelineTtlSerializer:
     """Serialize an Elody pipeline entity graph to a runnable RDF-Connect pipeline.ttl.
 
@@ -223,36 +262,7 @@ class PipelineTtlSerializer:
             channels.add(channel_uri)
 
     def _emit_values(self, g, subject, shape, values, channels):
-        """Emit one shape's values onto `subject`, recursing into nested nodes."""
-        for name, binding in shape.properties.items():
-            if name not in values:
-                continue
-            value = values[name]
-
-            if binding["nested"] is not None:
-                if not isinstance(value, dict):
-                    continue
-                nested_node = BNode()
-                self._emit_values(
-                    g, nested_node, binding["nested"], value, channels
-                )
-                # only attach if the nested node carries any triples
-                if next(g.predicate_objects(nested_node), None) is not None:
-                    g.add((subject, binding["path"], nested_node))
-                continue
-
-            if value in (None, ""):
-                continue
-
-            if binding["class"] in CHANNEL_CLASSES:
-                channel_uri = URIRef(self.base_uri + _slugify(value))
-                g.add((subject, binding["path"], channel_uri))
-                channels.add(channel_uri)
-            else:
-                datatype = binding["datatype"]
-                if datatype == XSD_STRING:
-                    datatype = None  # plain literal, identical in RDF 1.1
-                g.add((subject, binding["path"], Literal(value, datatype=datatype)))
+        emit_config_values(g, subject, shape, values, self.base_uri, channels)
 
     def _stage_uri(self, processor):
         name = _get_metadata_value(processor, "name") or processor.get(

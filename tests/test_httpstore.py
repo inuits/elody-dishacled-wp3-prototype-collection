@@ -215,8 +215,18 @@ class TestGetItemIncludesRawTtl:
         assert form_fields["follow"]["inputField"]["type"] == "checkbox"
 
 
-def _repo_fetch_session(ttl: str, full_name: str = "rdfc/ldes-client"):
-    """A mocked session answering the repo / tree / contents calls in order."""
+def _repo_fetch_session(
+    ttl: str,
+    full_name: str = "rdfc/ldes-client",
+    package_json: str | None = None,
+    tree=None,
+    files: dict | None = None,
+):
+    """A mocked session answering the repo / tree / contents calls.
+
+    Dispatches on the requested URL rather than on call order, so a test that
+    adds or drops a fetch does not have to know the sequence.
+    """
     repo_response = MagicMock()
     repo_response.status_code = 200
     repo_response.json.return_value = {
@@ -227,17 +237,36 @@ def _repo_fetch_session(ttl: str, full_name: str = "rdfc/ldes-client"):
 
     tree_response = MagicMock()
     tree_response.status_code = 200
-    tree_response.json.return_value = {"tree": [{"path": "processor.ttl"}]}
-
-    content_response = MagicMock()
-    content_response.status_code = 200
-    content_response.json.return_value = {
-        "content": base64.b64encode(ttl.encode("utf-8")).decode("utf-8"),
-        "encoding": "base64",
+    tree_response.json.return_value = {
+        "tree": tree if tree is not None else [{"path": "processor.ttl"}]
     }
 
+    def _contents(body):
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {
+            "content": base64.b64encode(body.encode("utf-8")).decode("utf-8"),
+            "encoding": "base64",
+        }
+        return response
+
+    missing = MagicMock()
+    missing.status_code = 404
+
+    def _get(url, **kwargs):
+        if "/git/trees/" in url:
+            return tree_response
+        if "/contents/package.json" in url:
+            return _contents(package_json) if package_json else missing
+        if "/contents/pyproject.toml" in url:
+            return missing
+        if "/contents/" in url:
+            path = url.split("/contents/", 1)[1]
+            return _contents((files or {}).get(path, ttl))
+        return repo_response
+
     session = MagicMock()
-    session.get.side_effect = [repo_response, tree_response, content_response]
+    session.get.side_effect = _get
     return session
 
 
@@ -412,3 +441,172 @@ class TestLocalComponents:
         assert result["count"] == 1
         assert result["results"][0]["_id"] == "local--http-poller-mm"
         store.session.get.assert_not_called()
+
+
+# A repository implementing a processor the contract catalog knows nothing
+# about -- so its coordinates can only come from its own manifest.
+UNCONTRACTED_TTL = """\
+@prefix rdfc: <https://w3id.org/rdf-connect#>.
+@prefix sh: <http://www.w3.org/ns/shacl#>.
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#>.
+
+rdfc:ThresholdMonitorTs rdfc:jsImplementationOf rdfc:Processor.
+
+[ ] a sh:NodeShape;
+  sh:targetClass rdfc:ThresholdMonitorTs;
+  sh:property [
+    sh:datatype xsd:decimal; sh:path rdfc:max; sh:name "max"; sh:minCount 1;
+  ].
+"""
+
+PACKAGE_JSON = """\
+{
+  "name": "@rdfc/threshold-monitor-processor-ts",
+  "version": "0.0.1-alpha.2",
+  "description": "Threshold monitor"
+}
+"""
+
+PYPROJECT = """\
+[project]
+name = "rdfc-threshold-monitoring"
+version = "0.2.1"
+"""
+
+
+class TestDeploymentCoordinates:
+    """What a build tool needs to actually obtain the processor.
+
+    The toolchain pipeline generator turns these into `package.json` /
+    `pyproject.toml` entries and the `owl:imports` the RDF-Connect runner
+    follows at start-up. Without them an exported pipeline names components
+    nothing can install.
+    """
+
+    def _item(self, ttl=UNCONTRACTED_TTL, **kwargs):
+        store = DishacledHttpStorageManager()
+        store.session = _repo_fetch_session(ttl, **kwargs)
+        return store.get_item_from_collection_by_id(
+            "githubProcessors", "rdfc--threshold-monitor"
+        )
+
+    def test_npm_package_is_read_from_package_json(self):
+        deployment = self._item(package_json=PACKAGE_JSON)["data"]["deployment"]
+        assert deployment["packages"] == [
+            {
+                "name": "@rdfc/threshold-monitor-processor-ts",
+                "version": "^0.0.1-alpha.2",
+                "supplier": "http://example.org/example/npm",
+            }
+        ]
+
+    def test_import_points_inside_the_installed_package(self):
+        # Verified against the published tarballs: @rdfc packages carry their
+        # TTL at the same path the repository does.
+        deployment = self._item(package_json=PACKAGE_JSON)["data"]["deployment"]
+        assert deployment["imports"] == [
+            "./node_modules/@rdfc/threshold-monitor-processor-ts/processor.ttl"
+        ]
+
+    def test_only_files_declaring_a_processor_are_imported(self):
+        # A repository's other TTL files (test fixtures, documentation
+        # snippets) are not processor definitions and must not be imported.
+        deployment = self._item(
+            package_json=PACKAGE_JSON,
+            tree=[{"path": "processor.ttl"}, {"path": "test/fixture.ttl"}],
+            files={"test/fixture.ttl": EXAMPLE_TTL},
+        )["data"]["deployment"]
+        assert deployment["imports"] == [
+            "./node_modules/@rdfc/threshold-monitor-processor-ts/processor.ttl"
+        ]
+
+    def test_a_repository_without_a_manifest_declares_no_package(self):
+        deployment = self._item()["data"]["deployment"]
+        assert deployment["packages"] == []
+        assert deployment["imports"] == []
+
+    def test_an_unparseable_manifest_is_ignored(self):
+        deployment = self._item(package_json="{ not json")["data"]["deployment"]
+        assert deployment["packages"] == []
+
+    def test_a_manifest_without_a_name_is_ignored(self):
+        deployment = self._item(package_json='{"version": "1.0.0"}')["data"][
+            "deployment"
+        ]
+        assert deployment["packages"] == []
+
+    def test_a_python_processor_is_routed_to_pip(self):
+        store = DishacledHttpStorageManager()
+        session = _repo_fetch_session(UNCONTRACTED_TTL)
+
+        def _get(url, **kwargs):
+            if "/contents/pyproject.toml" in url:
+                response = MagicMock()
+                response.status_code = 200
+                response.json.return_value = {
+                    "content": base64.b64encode(
+                        PYPROJECT.encode("utf-8")
+                    ).decode("utf-8"),
+                    "encoding": "base64",
+                }
+                return response
+            return session.get.side_effect(url, **kwargs)
+
+        store.session = MagicMock()
+        store.session.get.side_effect = _get
+        item = store.get_item_from_collection_by_id(
+            "githubProcessors", "rdfc--threshold-monitor"
+        )
+        package = item["data"]["deployment"]["packages"][0]
+        assert package["name"] == "rdfc-threshold-monitoring"
+        assert package["supplier"] == "http://example.org/example/pip"
+
+    def test_a_python_processor_gets_no_synthesised_import(self):
+        # The install location of a Python package depends on the interpreter
+        # version in the image, which we cannot know from here.
+        store = DishacledHttpStorageManager()
+        session = _repo_fetch_session(UNCONTRACTED_TTL)
+
+        def _get(url, **kwargs):
+            if "/contents/pyproject.toml" in url:
+                response = MagicMock()
+                response.status_code = 200
+                response.json.return_value = {
+                    "content": base64.b64encode(
+                        PYPROJECT.encode("utf-8")
+                    ).decode("utf-8"),
+                    "encoding": "base64",
+                }
+                return response
+            return session.get.side_effect(url, **kwargs)
+
+        store.session = MagicMock()
+        store.session.get.side_effect = _get
+        item = store.get_item_from_collection_by_id(
+            "githubProcessors", "rdfc--threshold-monitor"
+        )
+        assert item["data"]["deployment"]["imports"] == []
+
+    def test_a_catalog_contract_wins_over_the_repository(self):
+        # A component the contract catalog declares carries curated
+        # coordinates; the repository manifest is only the fallback.
+        deployment = self._item(ttl=CONTRACTED_TTL, package_json=PACKAGE_JSON)[
+            "data"
+        ]["deployment"]
+        assert deployment["packages"][0]["name"] == "@dishacled/demo-processors"
+
+    def test_deployment_survives_an_unreachable_manifest(self):
+        store = DishacledHttpStorageManager()
+
+        def _get(url, **kwargs):
+            if "/contents/package.json" in url:
+                raise requests.exceptions.RequestException("offline")
+            return _repo_fetch_session(UNCONTRACTED_TTL).get.side_effect(url, **kwargs)
+
+        store.session = MagicMock()
+        store.session.get.side_effect = _get
+        item = store.get_item_from_collection_by_id(
+            "githubProcessors", "rdfc--threshold-monitor"
+        )
+        assert item["data"]["deployment"]["packages"] == []
+        assert item["data"]["rawTtl"] == UNCONTRACTED_TTL
