@@ -14,6 +14,7 @@ from inuits_policy_based_auth.contexts.policy_context import (  # pyright: ignor
 from inuits_policy_based_auth.contexts.user_context import (  # pyright: ignore
     UserContext,
 )
+from storage.routing import uses_external_storage  # pyright: ignore
 from storage.storagemanager import StorageManager  # pyright: ignore
 
 
@@ -35,7 +36,10 @@ class GenericObjectDetailPolicy(BaseAuthorizationPolicy):
 
         resolved_collection = view_args.get("collection", collection)
         config = get_object_configuration_mapper().get(resolved_collection)
-        if config and config.crud().get("storage_type") == "http":
+        if config and uses_external_storage(config.crud().get("storage_type")):
+            # Externally stored types (GitHub repositories, the SPARQL error
+            # graph) have no document in the database to authorize against, so
+            # the item-level rules below cannot apply to them.
             policy_context.access_verdict = True
             return policy_context
 

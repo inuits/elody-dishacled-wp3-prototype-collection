@@ -6,7 +6,7 @@ The builder derives a UI tree from a processor's SHACL shapes by selecting a
 node shapes as `shui:DetailsEditor`s.
 """
 
-from apps.dishacled.shacl.shui import ShuiFormBuilder, UiNode, SHUI
+from apps.dishacled.shacl.shui import SH, ShuiFormBuilder, UiNode, SHUI
 
 
 # Mirrors the real http-utils-processor-ts structure: a 3-level nesting
@@ -135,6 +135,70 @@ class TestShuiTtl:
         g.parse(data=ttl, format="turtle")  # raises if invalid
         # at least one shui:editor triple present
         assert any(p == SHUI.editor for _, p, _ in g)
+
+
+ALERT_SHAPE_TTL = """\
+@prefix sh:   <http://www.w3.org/ns/shacl#>.
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#>.
+@prefix oslc: <http://open-services.net/ns/core#>.
+@prefix dct:  <http://purl.org/dc/terms/>.
+@prefix mu:   <http://mu.semte.ch/vocabularies/core/>.
+
+<http://lblod.data.gift/shapes/ErrorShape> a sh:NodeShape;
+  sh:targetClass oslc:Error;
+  sh:property [ sh:path mu:uuid;     sh:name "uuid";    sh:datatype xsd:string; ],
+              [ sh:path oslc:message; sh:name "message"; sh:datatype xsd:string; ],
+              [ sh:path dct:created;  sh:name "created"; sh:datatype xsd:dateTime; ].
+"""
+
+
+class TestVocabularyIsPreserved:
+    """A shape that is not rdf-connect's keeps its own namespaces.
+
+    The emitted `sh:path` and `sh:targetClass` used to be rebuilt in the `rdfc:`
+    namespace from a bare local name, so an alert shape came out claiming
+    `rdfc:message` and `rdfc:Error` -- IRIs that do not exist. The generated
+    document has to name the same properties the source shape does, or it is not
+    a description of that shape.
+    """
+
+    def _graph(self, ttl):
+        from rdflib import Graph
+
+        g = Graph()
+        g.parse(data=ShuiFormBuilder(ttl).to_ttl(), format="turtle")
+        return g
+
+    def test_the_target_class_is_the_one_the_shape_declares(self):
+        from rdflib import URIRef
+
+        g = self._graph(ALERT_SHAPE_TTL)
+        classes = set(g.objects(None, SH.targetClass))
+        assert classes == {URIRef("http://open-services.net/ns/core#Error")}
+
+    def test_property_paths_keep_their_own_vocabularies(self):
+        from rdflib import URIRef
+
+        g = self._graph(ALERT_SHAPE_TTL)
+        assert set(g.objects(None, SH.path)) == {
+            URIRef("http://mu.semte.ch/vocabularies/core/uuid"),
+            URIRef("http://open-services.net/ns/core#message"),
+            URIRef("http://purl.org/dc/terms/created"),
+        }
+
+    def test_no_rdf_connect_iri_is_invented(self):
+        ttl = ShuiFormBuilder(ALERT_SHAPE_TTL).to_ttl()
+        assert "w3id.org/rdf-connect" not in ttl
+
+    def test_processor_shapes_are_unaffected(self):
+        from rdflib import URIRef
+
+        g = self._graph(HTTP_UTILS_TTL)
+        paths = set(g.objects(None, SH.path))
+        assert URIRef("https://w3id.org/rdf-connect#url") in paths
+        assert URIRef("https://w3id.org/rdf-connect#HttpFetch") in set(
+            g.objects(None, SH.targetClass)
+        )
 
 
 class TestFallback:

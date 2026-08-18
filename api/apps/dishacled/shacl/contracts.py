@@ -91,6 +91,12 @@ LOCAL_ID_PREFIX = "local--"
 
 DEFAULT_CONTRACTS_PATH = Path(__file__).parent / "catalog" / "contracts.ttl"
 
+# Sample `oslc:Error` alerts, validated against the `ErrorShape` declared in
+# the catalog above. Lives here rather than beside the compose file so there is
+# a single copy: the triplestore service mounts this exact path, the container
+# image ships it, and the tests reach it without a relative path out of `api/`.
+DEFAULT_ALERTS_PATH = Path(__file__).parent / "catalog" / "alerts.ttl"
+
 # `owl:imports <./node_modules/...>` is deliberately relative: the toolchain
 # generator resolves it against the location the pipeline is mounted at inside
 # the container, which we cannot know here. rdflib resolves relative IRIs at
@@ -293,6 +299,10 @@ class ComponentContract:
     input_shape: ShapeRef | None
     output_shape: ShapeRef | None
     deployment: Deployment = Deployment()
+    # Where the component actually lives. Set when this catalog entry only
+    # adds shapes to something discoverable elsewhere (a GitHub repository),
+    # unset when the catalog is the component's only home.
+    landing_page: str | None = None
 
     @property
     def local_id(self) -> str:
@@ -429,6 +439,7 @@ class ContractCatalog:
                     input_shape=shapes["input"],
                     output_shape=shapes["output"],
                     deployment=_deployment_for(g, subject),
+                    landing_page=_first_value(g, subject, (DCAT.landingPage,)),
                 )
             )
         return contracts

@@ -36,10 +36,23 @@ class LocalComponentSource:
 
     def get_document(self, id: str) -> dict | None:
         contract = self.catalog.get_by_local_id(id)
-        return self._to_document(contract) if contract else None
+        if not contract or not self._is_local(contract):
+            return None
+        return self._to_document(contract)
+
+    @staticmethod
+    def _is_local(contract: ComponentContract) -> bool:
+        """Whether this catalog entry is the component's only home.
+
+        Some entries only add shapes to a component Elody already discovers on
+        GitHub; they declare `dcat:landingPage` to say so. Serving those here
+        as well would list the same component twice -- once as the repository
+        and once as a catalog stand-in.
+        """
+        return not contract.landing_page
 
     def list_documents(self, query: str = "") -> list[dict]:
-        contracts = self.catalog.all()
+        contracts = [c for c in self.catalog.all() if self._is_local(c)]
         if query:
             needle = query.lower()
             contracts = [

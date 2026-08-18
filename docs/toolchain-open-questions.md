@@ -9,7 +9,10 @@ Artefacts to put alongside these questions:
 
 * a sample `GET /pipelines/<id>/definition.ttl` export,
 * the project the generator compiles from it (`docker compose build` passes),
-* `docs/toolchain-export.md` for the modelling decisions.
+* `docs/toolchain-export.md` for the modelling decisions,
+* the running alert endpoint and its sample data, for §5
+  (`docs/alert-fixture.md`), and how Elody reads them
+  (`docs/alert-ingestion.md`).
 
 ## 1. Shape-role vocabulary — resolved, no answer needed
 
@@ -62,23 +65,63 @@ it means the same component can be described in two places.
 
 ## 5. The `oslc:Error` alert contract
 
-The alert feed Elody will ingest and visualise is the output of the pipeline it
+The alert feed Elody ingests and visualises is the output of the pipeline it
 exports: the demonstrator ends `ThresholdMonitor → … → SparqlIngest`, with
 `rdfc:typeFilter oslc:Error` and `graphStoreUrl "http://identifier/sparql"`.
 
-Elody's next task builds a local SPARQL endpoint seeded with sample
-`oslc:Error` alerts, doubling as the contract handed to redpencil and IDLab:
-*"this is the shape and the endpoint Elody expects"*.
+### Settled on our side
 
-That contract is a SHACL shape, which is exactly what the contract catalog
-holds and what the chain validation already checks against. Our proposal is to
-declare it once as the output shape of the alert-producing component, so the
-same definition serves the chain validation, the exported pipeline definition,
-the toolchain's shape-matching suite, and the hand-off to redpencil — rather
-than hand-authoring a second copy in the fixture.
+Elody now ships a local SPARQL endpoint seeded with sample `oslc:Error` alerts
+(`docs/alert-fixture.md`), so this is no longer a proposal — there are
+artefacts to react to:
 
-**Question for Aad / Arthur:** does the shape belong in the component catalog
-in that form, and is `http://identifier/sparql` the endpoint to standardise on?
+* `ErrorShape` is in the contract catalog **verbatim** from the processor's own
+  `processor.ttl` (`rdf-connect/threshhold-monitor-processor`, branch `master`),
+  under the IRI it publishes it at, `http://lblod.data.gift/shapes/ErrorShape`.
+  A gated test asserts graph isomorphism against the published file, so drift
+  is detectable rather than assumed away.
+* It is declared **once**, as a shape on the components rather than as a second
+  copy in the fixture: `outputShape` of the threshold monitor, `inputShape` of
+  sparql-ingest, `outputShape` of the alert store. The chain validation, the
+  exported pipeline definition and this hand-off all read the same triples.
+* Sample alerts are pyshacl-validated against that shape, with a negative
+  control so the check cannot pass vacuously.
+
+### Still open — for Aad / Arthur
+
+**Is `http://identifier/sparql` the endpoint to standardise on?** Locally we
+serve `/alerts/sparql` from a Fuseki container and read the address from
+configuration (`ALERT_SPARQL_ENDPOINT`, `ALERT_GRAPH`), so Elody is not
+hardcoded to either. We also assumed the named graph
+`http://mu.semte.ch/graphs/errors`, which is what the processor's README writes
+to — confirm or correct.
+
+Elody now ingests the alerts through that configuration (`docs/alert-ingestion.md`):
+they are queried live and served as entities, with nothing stored on our side.
+Switching to whatever endpoint and graph you settle on is therefore two
+environment variables and a restart, so the answer costs us nothing either way
+— but we cannot pick it for you.
+
+**Is the component catalog the right home for the shape?** It works and it
+keeps one copy, but it means a shape published by lblod is restated in a
+DiSHACLed catalog. The alternative is that we reference it and fetch it.
+
+### New — a defect in the alert output
+
+**The processor writes each alert on a blank node.** `src/index.ts` does
+`const id = blankNode()`. Three things contradict that:
+
+* lblod's own consumer, `loket-error-alert-service`, can only retrieve an alert
+  by URI (`VALUES ?uri { … }`) and triggers on a delta whose subject is a URI;
+* the processor's own README example inserts `<http://example.org/errors/1>`;
+* it already generates a `mu:uuid` it could mint a stable IRI from.
+
+A blank node cannot be linked to, cited, or deep-linked from a UI, so Elody
+cannot visualise one as an addressable thing. Our fixture mints
+`<…/alerts/{uuid}>` and we would like the processor to do the same.
+
+Note `ErrorShape` constrains properties, not node kind, so it accepts both
+forms — the shape will not settle this on its own.
 
 ## 6. Versioning
 

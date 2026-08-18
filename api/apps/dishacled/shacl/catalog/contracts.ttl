@@ -42,6 +42,13 @@
 @prefix demo:    <https://dishacled.github.io/demo#> .
 @prefix :        <http://example.org/example/> .
 
+# The alert vocabulary, as the threshold-monitor processor declares it.
+@prefix oslc:    <http://open-services.net/ns/core#> .
+@prefix mu:      <http://mu.semte.ch/vocabularies/core/> .
+@prefix dct:     <http://purl.org/dc/terms/> .
+@prefix tm:      <https://w3id.org/rdf-connect/threshold-monitor#> .
+@prefix lblodsh: <http://lblod.data.gift/shapes/> .
+
 
 #################################################################
 # Deployment coordinates
@@ -435,4 +442,152 @@ demo:SensorFeedCm a dcat:Dataset ;
     a dcat:Relationship ;
     dcat:hadRole tcs:outputShape ;
     dcterms:relation demo:MeasurementsInCmShape ;
+  ] .
+
+#################################################################
+# The alert contract
+#
+# `oslc:Error` is what the demonstrator's threshold monitor writes and what
+# Elody ingests and visualises (A1/A2). The shape below is copied VERBATIM
+# from the processor's own `processor.ttl`, under the same IRI it publishes
+# it at, so it is literally the upstream definition rather than a paraphrase:
+#
+#   repo    https://github.com/rdf-connect/threshhold-monitor-processor
+#           (three h's -- the two-h spelling is a different, non-existent repo)
+#   branch  master  (there is no `main`)
+#   file    processor.ttl, where the prefix `ex:` is bound to
+#           <http://lblod.data.gift/shapes/> -- NOT to example.org, which the
+#           same README's pipeline snippet misleadingly binds it to.
+#
+# Declaring it here once, as a component's output shape, is what lets the
+# chain validation, the exported pipeline definition and the hand-off to
+# redpencil all read the same triples. `api/apps/dishacled/shacl/catalog/
+# alerts.ttl` is sample data validated against exactly this shape.
+#################################################################
+
+lblodsh:ErrorShape
+    a sh:NodeShape;
+    sh:targetClass oslc:Error;
+
+    sh:property [
+        sh:path mu:uuid;
+        sh:name "uuid";
+        sh:datatype xsd:string;
+        sh:minCount 1;
+        sh:maxCount 1;
+    ], [
+        sh:path dct:subject;
+        sh:name "subject";
+        sh:description "Service that failed and threw the error.";
+        sh:datatype xsd:string;
+        sh:minCount 1;
+        sh:maxCount 1;
+    ], [
+        sh:path oslc:message;
+        sh:name "message";
+        sh:description "Short description of what functionally went wrong.";
+        sh:datatype xsd:string;
+        sh:minCount 1;
+        sh:maxCount 1;
+    ], [
+        sh:path dct:created;
+        sh:name "created";
+        sh:description "Time the error occurred and was logged.";
+        sh:datatype xsd:dateTime;
+        sh:minCount 1;
+        sh:maxCount 1;
+    ], [
+        sh:path dct:creator;
+        sh:name "creator";
+        sh:description "Service that threw the error.";
+        sh:nodeKind sh:IRI;
+        sh:minCount 1;
+        sh:maxCount 1;
+    ], [
+        sh:path oslc:largePreview;
+        sh:name "detail";
+        sh:description "Detail of the error, e.g. stacktrace or request dump.";
+        sh:datatype xsd:string;
+        sh:maxCount 1;
+    ], [
+        sh:path dct:references;
+        sh:name "references";
+        sh:description "Resource the error is related to.";
+        sh:nodeKind sh:IRI;
+        sh:maxCount 1;
+    ].
+
+
+#################################################################
+# threshold-monitor -- the alert producer
+#
+# A real published processor, so this entry is an overlay: it adds the output
+# shape to the repository Elody already discovers on GitHub. `dcat:landingPage`
+# is what marks it as having a home elsewhere, which keeps it from also being
+# served as a local catalog-only component.
+#
+# No `spdx:Package` / `owl:imports` here on purpose -- the deployment
+# coordinates are read off the repository's own package.json, and an empty
+# deployment in a contract deliberately does not overwrite them.
+#
+# No input shape: the processor reads SDS members, whose shape is a property
+# of the stream rather than of the processor, so the input port stays untyped.
+#################################################################
+
+tm:ThresholdMonitorJs a tcs:PipelineComponent, dcat:DataService ;
+  rdfs:label "Threshold monitor" ;
+  rdfs:comment "Watches a stream of measurements and writes an oslc:Error whenever a value falls outside the configured bounds." ;
+  dcat:landingPage <https://github.com/rdf-connect/threshhold-monitor-processor> ;
+  dcterms:conformsTo lblodsh:ErrorShape ;
+  dcat:qualifiedRelation [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:outputShape ;
+    dcterms:relation lblodsh:ErrorShape ;
+  ] .
+
+
+#################################################################
+# sparql-ingest -- the alert consumer
+#
+# Closes the chain: threshold-monitor's output shape and sparql-ingest's input
+# shape are the same IRI, so `ThresholdMonitorJs -> SPARQLIngest` validates,
+# while `ThresholdMonitorCm -> SPARQLIngest` (a measurement, not an alert)
+# does not. Overlay on a real repository, same rules as above.
+#################################################################
+
+rdfc:SPARQLIngest a tcs:PipelineComponent, dcat:DataService ;
+  rdfs:label "SPARQL ingest" ;
+  rdfs:comment "Writes incoming members into a SPARQL store via SPARQL Update." ;
+  dcat:landingPage <https://github.com/rdf-connect/sparql-ingest-processor-ts> ;
+  dcterms:conformsTo lblodsh:ErrorShape ;
+  dcat:qualifiedRelation [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:inputShape ;
+    dcterms:relation lblodsh:ErrorShape ;
+  ] .
+
+
+#################################################################
+# The alert store -- output shape only
+#
+# The local SPARQL endpoint seeded with sample alerts, declared as a dataset so
+# the endpoint is machine-readable and so A1 has a source it can pick in the
+# pipeline builder. No `dcat:landingPage`: this one has no repository and is
+# served from the catalog itself.
+#
+# The endpoint IRI is the in-network address; the browser-facing one goes
+# through Traefik. Both are in `.env.dist` as ALERT_SPARQL_ENDPOINT and
+# ALERT_SPARQL_ENDPOINT_EXT -- see docs/alert-fixture.md.
+#################################################################
+
+demo:AlertStore a dcat:Dataset ;
+  rdfs:label "Alert store" ;
+  rdfs:comment "Local SPARQL endpoint seeded with sample oslc:Error alerts, standing in for redpencil's error graph." ;
+  dcat:endpointURL <http://triplestore-dishacled-wp3-prototype-elody:3030/alerts/sparql> ;
+  dcat:accessURL <http://triplestore.dishacled-wp3-prototype-elody.localhost:8000/alerts/sparql> ;
+  dcterms:conformsTo lblodsh:ErrorShape ;
+  dcat:qualifiedRelation [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:outputShape ;
+    dcterms:relation lblodsh:ErrorShape ;
   ] .

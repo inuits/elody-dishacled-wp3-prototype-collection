@@ -1,0 +1,80 @@
+# Sample `oslc:Error` alerts -- the local stand-in for redpencil's error graph.
+#
+# Loaded into the named graph <http://mu.semte.ch/graphs/errors> by the
+# `triplestore` service in the dishacled docker-compose stack, so alert
+# ingestion (A1) and visualisation (A2) can be built and tested with no
+# dependency on the live feed. See docs/alert-fixture.md.
+#
+# Every alert here conforms to <http://lblod.data.gift/shapes/ErrorShape>, the
+# shape the threshold-monitor processor publishes; that shape lives in
+# contracts.ttl and is checked against this file by tests/test_alert_fixture.py.
+#
+# Two things about this data are deliberate:
+#
+#   * Alerts are IRIs, not blank nodes. The processor emits a blank node today
+#     (src/index.ts: `const id = blankNode()`), but lblod's own consumer
+#     retrieves an alert by URI (`VALUES ?uri { ... }`) and the processor's own
+#     README example writes an IRI. A blank node is not addressable, so it
+#     could not be linked to or deep-linked from a UI. See
+#     docs/toolchain-open-questions.md section 5.
+#   * The last alert carries neither `oslc:largePreview` nor `dct:references`.
+#     Both are optional in the shape, so a consumer that assumes they are
+#     always present is wrong -- this alert is what makes that a test failure
+#     rather than a production surprise.
+#
+# The messages follow the demonstrator's cm/mm story: a threshold monitor
+# watching centimetre and millimetre measurement streams.
+
+@prefix oslc:   <http://open-services.net/ns/core#> .
+@prefix mu:     <http://mu.semte.ch/vocabularies/core/> .
+@prefix dct:    <http://purl.org/dc/terms/> .
+@prefix xsd:    <http://www.w3.org/2001/XMLSchema#> .
+@prefix alert:  <https://dishacled.github.io/demo/alerts/> .
+@prefix member: <https://dishacled.github.io/demo/members/> .
+@prefix agent:  <https://dishacled.github.io/demo/agents#> .
+
+
+# 1 -- centimetre reading above the configured maximum, full detail.
+alert:2f8c1d94-5a3b-4e7f-9c21-6b0d8e4a1f37
+  a oslc:Error ;
+  mu:uuid "2f8c1d94-5a3b-4e7f-9c21-6b0d8e4a1f37" ;
+  dct:subject "threshold-monitor" ;
+  oslc:message "Measurement above maximum threshold" ;
+  dct:created "2026-07-15T09:21:45.725Z"^^xsd:dateTime ;
+  dct:creator agent:threshold-monitor ;
+  oslc:largePreview "Member <https://dishacled.github.io/demo/members/m-0417> has value 412.5 cm, above the configured maximum of 300 cm." ;
+  dct:references member:m-0417 .
+
+
+# 2 -- millimetre reading below the configured minimum, a different stream.
+alert:8b41e2a7-0c96-4d58-b3ea-17f5c9d02e64
+  a oslc:Error ;
+  mu:uuid "8b41e2a7-0c96-4d58-b3ea-17f5c9d02e64" ;
+  dct:subject "threshold-monitor" ;
+  oslc:message "Measurement below minimum threshold" ;
+  dct:created "2026-07-15T11:04:02.118Z"^^xsd:dateTime ;
+  dct:creator agent:threshold-monitor ;
+  oslc:largePreview "Member <https://dishacled.github.io/demo/members/m-0418> has value 42.0 mm, below the configured minimum of 100 mm." ;
+  dct:references member:m-0418 .
+
+
+# 3 -- centimetre breach again, later, so alerts can be ordered and grouped.
+alert:c05a7f63-9e12-4b8d-a4c7-3d61b28e5091
+  a oslc:Error ;
+  mu:uuid "c05a7f63-9e12-4b8d-a4c7-3d61b28e5091" ;
+  dct:subject "threshold-monitor" ;
+  oslc:message "Measurement above maximum threshold" ;
+  dct:created "2026-07-16T06:47:30.902Z"^^xsd:dateTime ;
+  dct:creator agent:threshold-monitor ;
+  oslc:largePreview "Member <https://dishacled.github.io/demo/members/m-0503> has value 356.8 cm, above the configured maximum of 300 cm." ;
+  dct:references member:m-0503 .
+
+
+# 4 -- both optional properties absent. Consumers must handle this.
+alert:47d9b0e5-6a28-4c31-8f5b-92e0a7c46d13
+  a oslc:Error ;
+  mu:uuid "47d9b0e5-6a28-4c31-8f5b-92e0a7c46d13" ;
+  dct:subject "threshold-monitor" ;
+  oslc:message "Measurement outside configured bounds" ;
+  dct:created "2026-07-16T08:15:11.443Z"^^xsd:dateTime ;
+  dct:creator agent:threshold-monitor .

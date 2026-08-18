@@ -5,9 +5,11 @@ from apps.dishacled.object_configurations.channel_configuration import ChannelCo
 from apps.dishacled.object_configurations.runner_configuration import RunnerConfiguration
 from apps.dishacled.object_configurations.pipeline_configuration import PipelineConfiguration
 from apps.dishacled.object_configurations.github_processor_configuration import GithubProcessorConfiguration
+from apps.dishacled.object_configurations.alert_configuration import AlertConfiguration
 from storage.arangostore import ArangoStorageManager
 from storage.memorystore import MemoryStorageManager
 from storage.mongostore import MongoStorageManager
+from storage.sparqlstore import SparqlStorageManager
 from apps.dishacled.storage.dishacled_httpstore import DishacledHttpStorageManager
 
 
@@ -24,6 +26,10 @@ OBJECT_CONFIGURATION_MAPPER = {
     "user": UserConfiguration,
     "githubProcessor": GithubProcessorConfiguration,
     "githubProcessors": GithubProcessorConfiguration,
+    # Resources look up by type or by collection depending on what they hold,
+    # so both keys are registered.
+    "alert": AlertConfiguration,
+    "alerts": AlertConfiguration,
 }
 
 ROUTE_MAPPER = {
@@ -40,6 +46,10 @@ STORAGE_MAPPER = {
     "memory": MemoryStorageManager,
     "mongo": MongoStorageManager,
     "http": DishacledHttpStorageManager,
+    # Read-through against the demonstrator error graph; the generic engine
+    # needs no client subclass because it takes its vocabulary from the
+    # collection's object configuration.
+    "sparql": SparqlStorageManager,
 }
 
 COLLECTION_MAPPER = {"tickets": "abstracts"}

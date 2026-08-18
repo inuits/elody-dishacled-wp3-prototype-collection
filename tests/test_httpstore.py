@@ -4,6 +4,7 @@ import base64
 import requests
 
 from apps.dishacled.storage.dishacled_httpstore import DishacledHttpStorageManager
+from apps.dishacled.storage.local_component_source import LocalComponentSource
 
 
 CM_SHAPE = "https://dishacled.github.io/demo#MeasurementsInCmShape"
@@ -610,3 +611,37 @@ class TestDeploymentCoordinates:
         )
         assert item["data"]["deployment"]["packages"] == []
         assert item["data"]["rawTtl"] == UNCONTRACTED_TTL
+
+
+class TestOverlayComponentsAreNotListedLocally:
+    """A catalog entry that only adds shapes to a GitHub repository must not
+    also appear as a local component -- that would list the same thing twice."""
+
+    def source(self):
+        return LocalComponentSource()
+
+    def test_overlaid_components_are_absent_from_the_listing(self):
+        ids = {d["_id"] for d in self.source().list_documents()}
+        assert "local--threshold-monitor-js" not in ids
+        assert "local--sparql-ingest" not in ids
+
+    def test_overlaid_components_are_not_resolvable_by_local_id(self):
+        assert self.source().get_document("local--sparql-ingest") is None
+
+    def test_the_alert_store_is_listed(self):
+        """It has no repository, so the catalog is its only home."""
+        ids = {d["_id"] for d in self.source().list_documents()}
+        assert "local--alert-store" in ids
+
+    def test_the_alert_store_exposes_the_error_shape(self):
+        document = self.source().get_document("local--alert-store")
+        assert document["data"]["componentKind"] == "dataset"
+        assert document["data"]["outputShape"]["iri"] == (
+            "http://lblod.data.gift/shapes/ErrorShape"
+        )
+        assert document["data"]["inputShape"] is None
+
+    def test_the_demo_components_are_still_listed(self):
+        ids = {d["_id"] for d in self.source().list_documents()}
+        assert "local--threshold-monitor-cm" in ids
+        assert "local--sensor-feed-cm" in ids

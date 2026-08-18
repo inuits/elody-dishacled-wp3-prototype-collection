@@ -363,28 +363,47 @@ class TestBundledContractsFixture:
     def catalog(self):
         return ContractCatalog.from_file(DEFAULT_CONTRACTS_PATH)
 
+    def hosted(self):
+        """Entries the catalog fully owns.
+
+        Some entries only add shapes to a component discovered on GitHub and
+        say so with `dcat:landingPage`; those carry no config shape and no
+        deployment coordinates on purpose, so the invariants below are about
+        the demo components the catalog is the only home for.
+        """
+        return [c for c in self.catalog().all() if not c.landing_page]
+
     def test_file_exists_and_parses(self):
         assert DEFAULT_CONTRACTS_PATH.exists()
         assert len(self.catalog().all()) > 0
 
-    def test_four_components_and_one_dataset(self):
-        entries = self.catalog().all()
+    def test_four_components_and_two_datasets(self):
+        entries = self.hosted()
         assert len([c for c in entries if c.kind == "component"]) == 4
-        assert len([c for c in entries if c.kind == "dataset"]) == 1
+        assert len([c for c in entries if c.kind == "dataset"]) == 2
+
+    def test_the_overlay_entries_name_the_repository_they_describe(self):
+        overlays = [c for c in self.catalog().all() if c.landing_page]
+        assert {c.iri for c in overlays} == {
+            "https://w3id.org/rdf-connect/threshold-monitor#ThresholdMonitorJs",
+            "https://w3id.org/rdf-connect#SPARQLIngest",
+        }
 
     def test_every_component_has_config_input_and_output(self):
-        for c in self.catalog().all():
+        for c in self.hosted():
             if c.kind != "component":
                 continue
             assert c.config_shape is not None, c.iri
             assert c.input_shape is not None, c.iri
             assert c.output_shape is not None, c.iri
 
-    def test_dataset_declares_output_only(self):
-        dataset = next(c for c in self.catalog().all() if c.kind == "dataset")
-        assert dataset.output_shape is not None
-        assert dataset.input_shape is None
-        assert dataset.config_shape is None
+    def test_datasets_declare_output_only(self):
+        datasets = [c for c in self.catalog().all() if c.kind == "dataset"]
+        assert datasets
+        for dataset in datasets:
+            assert dataset.output_shape is not None, dataset.iri
+            assert dataset.input_shape is None, dataset.iri
+            assert dataset.config_shape is None, dataset.iri
 
     def test_cm_and_mm_shapes_are_distinct(self):
         assert self.CM_SHAPE != self.MM_SHAPE
@@ -462,7 +481,7 @@ class TestBundledContractsFixture:
         assert data["configShape"]["properties"]
 
     def test_dataset_to_data_has_null_input_and_config(self):
-        dataset = next(c for c in self.catalog().all() if c.kind == "dataset")
+        dataset = self.catalog().get("https://dishacled.github.io/demo#SensorFeedCm")
         data = dataset.to_data()
         assert data["inputShape"] is None
         assert data["configShape"] is None
@@ -533,13 +552,18 @@ demo:Poller a tcs:PipelineComponent;
 
 
 class TestBundledDeploymentCoordinates:
-    """The shipped demo components must be installable by the generator."""
+    """The shipped demo components must be installable by the generator.
+
+    Only the ones the catalog hosts itself: an entry that merely overlays
+    shapes onto a GitHub repository leaves the coordinates empty so the
+    repository's own manifest keeps winning.
+    """
 
     def components(self):
         return [
             c
             for c in ContractCatalog.from_file(DEFAULT_CONTRACTS_PATH).all()
-            if c.kind == "component"
+            if c.kind == "component" and not c.landing_page
         ]
 
     def test_every_component_declares_an_import(self):
@@ -568,3 +592,43 @@ class TestBundledDeploymentCoordinates:
             if c.kind == "dataset"
         )
         assert dataset.deployment.packages == ()
+
+
+CONTRACT_WITH_LANDING_PAGE = PREFIXES + MEASUREMENT_SHAPES + """
+demo:Overlay a tcs:PipelineComponent, dcat:DataService;
+  rdfs:label "Overlay";
+  dcat:landingPage <https://github.com/owner/repo>;
+  dcat:qualifiedRelation [
+    a dcat:Relationship;
+    dcat:hadRole tcs:outputShape;
+    dcterms:relation demo:CmShape;
+  ].
+
+demo:Hosted a tcs:PipelineComponent, dcat:DataService;
+  rdfs:label "Hosted";
+  dcat:qualifiedRelation [
+    a dcat:Relationship;
+    dcat:hadRole tcs:outputShape;
+    dcterms:relation demo:CmShape;
+  ].
+"""
+
+
+class TestLandingPage:
+    """`dcat:landingPage` marks an entry that only overlays shapes onto a
+    component discovered elsewhere, so it is not also served as a local one."""
+
+    def catalog(self):
+        return ContractCatalog.from_ttl(CONTRACT_WITH_LANDING_PAGE)
+
+    def test_a_landing_page_is_parsed(self):
+        c = self.catalog().get("https://dishacled.github.io/demo#Overlay")
+        assert c.landing_page == "https://github.com/owner/repo"
+
+    def test_it_defaults_to_none(self):
+        c = self.catalog().get("https://dishacled.github.io/demo#Hosted")
+        assert c.landing_page is None
+
+    def test_it_does_not_affect_the_shapes(self):
+        c = self.catalog().get("https://dishacled.github.io/demo#Overlay")
+        assert c.output_shape.iri == CM

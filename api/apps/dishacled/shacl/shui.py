@@ -16,7 +16,7 @@ definition is itself a standard, portable artifact.
 
 from dataclasses import dataclass, field
 
-from rdflib import Graph, Namespace, RDF, BNode, Literal
+from rdflib import Graph, Namespace, RDF, BNode, Literal, URIRef
 from rdflib.collection import Collection
 
 
@@ -46,7 +46,11 @@ class UiNode:
     """
 
     name: str
-    path: str | None = None
+    path: str | None = None  # local name, for display and lookups
+    # The property's full IRI. Kept alongside the local name because a shape may
+    # mix vocabularies -- an alert uses oslc:, dct: and mu: in one shape -- and
+    # rebuilding an IRI from a local name would invent one that does not exist.
+    path_iri: str | None = None
     editor: str = "TextFieldEditor"  # shui editor local name
     datatype: str | None = None
     class_ref: str | None = None
@@ -100,10 +104,14 @@ class ShuiFormBuilder:
         self._g.parse(data=ttl_string, format="turtle")
         # map targetClass local name -> node shape subject
         self._shapes_by_class: dict[str, object] = {}
+        # ...and the full IRI of that class, so the emitted shape can name it
+        # in its own vocabulary rather than guessing one.
+        self._class_iris: dict[str, object] = {}
         for ns in self._g.subjects(RDF.type, SH.NodeShape):
             tc = self._g.value(ns, SH.targetClass)
             if tc is not None:
                 self._shapes_by_class[_local_name(tc)] = ns
+                self._class_iris[_local_name(tc)] = tc
 
     # -- tree -------------------------------------------------------------
 
@@ -178,6 +186,7 @@ class ShuiFormBuilder:
         node = UiNode(
             name=name,
             path=_local_name(path) if path else None,
+            path_iri=str(path) if path else None,
             editor=editor,
             datatype=datatype_ln,
             class_ref=class_ln,
@@ -207,10 +216,16 @@ class ShuiFormBuilder:
         out.bind("rdfc", RDFC)
 
         root = self.build_tree()
+        # Bind whatever vocabularies the source shape used, so the output reads
+        # in the same prefixes rather than as bare IRIs.
+        for prefix, namespace in self._g.namespaces():
+            out.bind(prefix, namespace)
+
         shape_subject = BNode()
         out.add((shape_subject, RDF.type, SH.NodeShape))
         if root.name:
-            out.add((shape_subject, SH.targetClass, RDFC[root.name]))
+            target = self._class_iris.get(root.name) or RDFC[root.name]
+            out.add((shape_subject, SH.targetClass, URIRef(target)))
         self._emit_properties(out, shape_subject, root.children)
         return out.serialize(format="turtle")
 
@@ -218,7 +233,9 @@ class ShuiFormBuilder:
         for node in children:
             prop = BNode()
             out.add((subject, SH.property, prop))
-            if node.path:
+            if node.path_iri:
+                out.add((prop, SH.path, URIRef(node.path_iri)))
+            elif node.path:
                 out.add((prop, SH.path, RDFC[node.path]))
             out.add((prop, SH.name, Literal(node.name)))
             out.add((prop, SHUI.editor, SHUI[node.editor]))

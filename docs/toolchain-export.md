@@ -21,6 +21,34 @@ violations prepended as turtle comments.
 
 [spec]: https://github.com/thcarsten/toolchain-specification
 
+## Exporting from the UI
+
+The pipeline detail page has an **Export pipeline definition** entry in its
+overflow (⋮) menu, next to Edit metadata and delete. It downloads exactly what
+`GET /pipelines/<id>/definition.ttl` returns, named by the filename the API
+sets (`pipeline-definition-<id>.ttl`).
+
+It cannot call collection-api directly: the access token lives in the graphql
+service's session, not in the page. So the click goes to
+`GET /api/pipelines/<id>/definition.ttl` on the graphql service, which adds the
+token and passes the upstream status, content type and filename straight
+through — including the **409** for an invalid chain, whose JSON explanation
+stays readable in the response.
+
+| Piece | Where |
+| --- | --- |
+| The proxy | graphql-service `src/endpoints/pipelineExport.ts` |
+| URL building and its guards | `src/endpoints/pipelineExportUrl.ts` (+ `.test.ts`) |
+| The menu entry | `src/dishacledRoutes.ts`, `entityPageConfig.pipeline.actions` |
+
+Only `export.ttl` and `definition.ttl` are proxied, and only `force` and
+`catalog` are forwarded: both the id and the export name are interpolated into
+an upstream URL, so neither is taken from the request unchecked.
+
+The menu entry uses the framework's `downloadZip` action type, which is not
+zip-specific — it means "call an endpoint and save the response as a file", and
+takes the filename from `Content-Disposition`.
+
 ## What the definition contains
 
 Per step:

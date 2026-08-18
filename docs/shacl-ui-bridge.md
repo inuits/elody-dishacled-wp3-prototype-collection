@@ -151,6 +151,7 @@ A captured example (generated from the live processor) is checked in at
 | SHACL 1.2 UI → Elody form fields (nested) | `api/apps/dishacled/shacl/form.py` (`shacl_to_form_fields`) |
 | Served per processor | `api/apps/dishacled/storage/dishacled_httpstore.py` (`data.formFields`) |
 | Generated `shui:` shape endpoint | `api/apps/dishacled/resources/processor_shui.py` |
+| Same pipeline, pointed at an alert shape | `api/apps/dishacled/shacl/alert_shape.py`, `resources/alert_shape.py` (`/shapes/alert`, `/shapes/alert/shui.ttl`) — see `docs/alert-rendering.md` |
 | Nested config → RDF-Connect TTL | `api/apps/dishacled/serializers/pipeline_ttl_serializer.py` |
 | Live channel options injected | graphql-service `ProcessorConfigForm` resolver |
 | Rendered | PWA `DynamicForm.vue` + `ShaclDetailsField.vue` |
