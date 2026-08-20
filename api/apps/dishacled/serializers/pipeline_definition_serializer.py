@@ -151,6 +151,7 @@ class PipelineDefinitionSerializer:
 
         pipeline_uri = self.pipeline_uri
         g.add((pipeline_uri, RDF.type, TCS.PipelineDefinition))
+        self._add_identifier(g, pipeline_uri, pipeline)
         self._add_label_and_comment(g, pipeline_uri, pipeline)
 
         steps, datasets = self._resolve_stages(g, pipeline, processors)
@@ -189,6 +190,7 @@ class PipelineDefinitionSerializer:
                     datasets[key] = dataset_uri
                     g.add((pipeline_uri, DCT.source, dataset_uri))
                     g.add((dataset_uri, RDF.type, DCAT.Dataset))
+                    self._add_identifier(g, dataset_uri, document)
                     self._add_label_and_comment(g, dataset_uri, document)
                 continue
 
@@ -332,6 +334,7 @@ class PipelineDefinitionSerializer:
 
         g.add((component, RDF.type, TCS.PipelineComponent))
         g.add((component, RDF.type, DCAT.Resource))
+        self._add_identifier(g, component, document)
 
         name = _get_metadata_value(document, "name")
         if name:
@@ -460,6 +463,23 @@ class PipelineDefinitionSerializer:
         g += shape_graph
 
     # -- helpers -----------------------------------------------------------
+
+    @staticmethod
+    def _add_identifier(g, subject, document):
+        """The Elody document id this subject was built from.
+
+        A definition names a component by its IRI (`prov:specializationOf
+        rdfc:Validate`), which is the right thing for the toolchain but not
+        enough to read the definition back: Elody addresses the same component
+        as a document, `rdf-connect--shacl-processor-ts`, and that is the key a
+        pipeline's `hasProcessor` relation is stored under. Carrying the id
+        keeps the store a complete source of truth -- the alternative is
+        looking every component up on GitHub on every read, which loses a step
+        as soon as a repository moves.
+        """
+        identifier = (document or {}).get("_id")
+        if identifier:
+            g.add((subject, DCT.identifier, Literal(identifier)))
 
     @staticmethod
     def _add_label_and_comment(g, subject, document):

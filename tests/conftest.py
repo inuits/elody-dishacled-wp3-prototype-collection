@@ -70,3 +70,85 @@ def _install_framework_stubs() -> None:
 
 
 _install_framework_stubs()
+
+
+def _install_configuration_stub() -> None:
+    """`get_storage_mapper`, for modules that reach for the http store.
+
+    Registered alongside the object configuration mapper of the same module so
+    an import of either resolves; both raise when actually called, since the
+    suite passes components in explicitly rather than fetching them.
+    """
+    import configuration
+
+    if not hasattr(configuration, "get_storage_mapper"):
+
+        def get_storage_mapper():  # pragma: no cover - never called
+            raise NotImplementedError("no storage mapper outside the app")
+
+        configuration.get_storage_mapper = get_storage_mapper
+
+
+def _install_elody_stub() -> None:
+    """A stand-in for the object configuration base class.
+
+    `PipelineConfiguration` derives from the framework's `ElodyConfiguration`,
+    which lives in the container image. The stub carries only what the subclass
+    calls through to -- the crud hooks and the pass-through accessors -- so the
+    client's own hook logic is exercised on the host as well.
+    """
+    if not _missing("elody"):
+        return
+
+    elody = types.ModuleType("elody")
+    elody.__path__ = []
+    object_configurations = types.ModuleType("elody.object_configurations")
+    object_configurations.__path__ = []
+    module = types.ModuleType("elody.object_configurations.elody_configuration")
+
+    class ElodyConfiguration:
+        SCHEMA_TYPE = "elody"
+        SCHEMA_VERSION = 1
+
+        def crud(self):
+            return {
+                "post_crud_hook": lambda **kwargs: self._post_crud_hook(**kwargs),
+                "pre_crud_hook": lambda **kwargs: self._pre_crud_hook(**kwargs),
+            }
+
+        def document_info(self):
+            return {"object_lists": {"metadata": "key", "relations": "type"}}
+
+        def logging(self, flat_document, **kwargs):
+            return {}
+
+        def migration(self):
+            return {}
+
+        def serialization(self, from_format, to_format):
+            return lambda document, **kwargs: document
+
+        def validation(self):
+            return {}
+
+        def _post_crud_hook(self, **kwargs):
+            pass
+
+        def _pre_crud_hook(self, *, crud, document={}, **kwargs):
+            return document
+
+    module.ElodyConfiguration = ElodyConfiguration
+    elody.object_configurations = object_configurations
+    object_configurations.elody_configuration = module
+
+    sys.modules.update(
+        {
+            "elody": elody,
+            "elody.object_configurations": object_configurations,
+            "elody.object_configurations.elody_configuration": module,
+        }
+    )
+
+
+_install_configuration_stub()
+_install_elody_stub()

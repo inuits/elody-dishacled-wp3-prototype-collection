@@ -121,6 +121,26 @@ class _ShapeIndex:
         return cls(target_class, properties)
 
 
+def shape_index_for(graph, target_class, shapes_by_class=None):
+    """The property bindings of one shape already present in a graph.
+
+    `_ShapeIndex.from_ttl` picks its own shape out of a processor file, by
+    looking for the class the file declares an implementation of. A pipeline
+    definition holds many shapes and declares no implementation, so the caller
+    names the class instead -- reading a definition back needs exactly the
+    bindings the export wrote it with, and this is where they are computed.
+    """
+    if shapes_by_class is None:
+        shapes_by_class = {
+            target: shape
+            for shape in graph.subjects(RDF.type, SH.NodeShape)
+            if (target := graph.value(shape, SH.targetClass)) is not None
+        }
+    if target_class not in shapes_by_class:
+        return None
+    return _ShapeIndex._build(graph, target_class, shapes_by_class, {target_class})
+
+
 def emit_config_values(g, subject, shape, values, base_uri, channels):
     """Emit one shape's config values onto `subject`, recursing into nested nodes.
 

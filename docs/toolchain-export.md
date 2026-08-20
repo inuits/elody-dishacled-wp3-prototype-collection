@@ -19,6 +19,11 @@ Both routes share the chain validation: an incompatible pipeline answers
 **409** with the violation list, and `?force=true` exports it anyway with the
 violations prepended as turtle comments.
 
+Downloading is not the only way out any more: saving a pipeline also writes its
+definition into the central triple store, which is how the toolchain services
+reach it without calling Elody at all. See
+[toolchain-publication.md](toolchain-publication.md).
+
 [spec]: https://github.com/thcarsten/toolchain-specification
 
 ## Exporting from the UI
@@ -112,7 +117,10 @@ interpreter version baked into the image, which is not knowable from here.
 * **`owl:imports` stays relative.** The generator parses with base
   `file:///workspace/pipeline/` (rdfine `GraphReader`), which is where the
   runner mounts the pipeline. Resolving the import in Elody would nail it to
-  the wrong root.
+  the wrong root. In the *published* graph it has to be resolved anyway — RDF
+  has no relative IRIs — so publication resolves it against that same base
+  rather than letting the store resolve it against its own URL. See
+  [toolchain-publication.md](toolchain-publication.md).
 * **The demo components carry placeholder package coordinates.** See the
   header of `api/apps/dishacled/shacl/catalog/contracts.ttl`. The manifest
   entries are shaped and routed correctly, but `@dishacled/demo-processors`

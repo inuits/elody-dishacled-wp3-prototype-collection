@@ -63,6 +63,42 @@ catalog and the export names them only.
 **Question:** which way is intended? The fragment works and merges cleanly, but
 it means the same component can be described in two places.
 
+## 4b. Named graphs for published pipeline definitions
+
+Elody now publishes a saved pipeline's `tcs:PipelineDefinition` into the
+central store rather than only serving it as a download
+(`docs/toolchain-publication.md`). Two things need agreeing before the dry run.
+
+**The graph naming.** We write one named graph per pipeline,
+`http://mu.semte.ch/graphs/pipeline-definitions/<id>`, aligned with the errors
+graph. One graph per pipeline is what makes republishing an atomic replace and
+deletion exact: a definition hangs its config, packages and shapes off blank
+nodes, so scoping a `DELETE` to one pipeline inside a shared graph has no
+reliable spelling. Consumers therefore query `GRAPH ?g { ?p a
+tcs:PipelineDefinition }`. Both the endpoint and the base IRI are environment
+variables, so a different convention costs us a restart.
+
+**Write authorisation.** Locally we write over the Graph Store Protocol with
+Basic auth (Fuseki restricts `/*/data` out of the box). What does redpencil's
+store expect — Basic, a token, a service account per writer?
+
+**Question for Koen / Thomas:** confirm or correct the naming, and say what a
+writer has to present.
+
+**New — `dct:identifier` in the catalog fragment.** Pipelines are now *stored*
+in the graph rather than mirrored into it (`docs/pipeline-storage.md`), so Elody
+has to be able to read a definition back. A step names its component by IRI,
+which the toolchain wants, but Elody addresses the same component as a document
+(`rdf-connect--shacl-processor-ts`) and that is the key it stores the step
+under. So the export emits `dct:identifier` on the pipeline, on each component
+in the fragment and on each dataset. The alternative — resolving the IRI by
+listing components from GitHub on every read — is slower and loses a step as
+soon as a repository moves.
+
+It is one extra non-`tcs:` triple per subject in a shared document, which is why
+it is here: is `dct:identifier` acceptable, or does the toolchain already have a
+term for "the id the composing tool knows this component by"?
+
 ## 5. The `oslc:Error` alert contract
 
 The alert feed Elody ingests and visualises is the output of the pipeline it

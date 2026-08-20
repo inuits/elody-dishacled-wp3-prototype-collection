@@ -16,7 +16,11 @@ from apps.dishacled.storage.dishacled_httpstore import DishacledHttpStorageManag
 OBJECT_CONFIGURATION_MAPPER = {
     "entities": EntityConfiguration,
     "entity": EntityConfiguration,
+    # Both keys, like the alerts below: a route looks the configuration up by
+    # collection, the write paths by type, and a pipeline is stored under a
+    # collection name of its own so it can be routed to the triple store.
     "pipeline": PipelineConfiguration,
+    "pipelines": PipelineConfiguration,
     "channel": ChannelConfiguration,
     "runner": RunnerConfiguration,
     "jsRunner": RunnerConfiguration,

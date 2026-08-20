@@ -1,8 +1,10 @@
-from os import getenv
-
+from apps.dishacled.pipeline.publication import pipeline_base_uri
 from apps.dishacled.pipeline.validation import validate_pipeline
 from apps.dishacled.resources.base_resource import DishacledBaseResource
-from apps.dishacled.resources.pipeline_components import load_pipeline_components
+from apps.dishacled.resources.pipeline_components import (
+    load_pipeline,
+    load_pipeline_components,
+)
 from apps.dishacled.serializers.pipeline_definition_serializer import (
     PipelineDefinitionSerializer,
 )
@@ -35,8 +37,8 @@ class _PipelineExportBase(DishacledBaseResource):
     filename_prefix = "pipeline"
 
     def _export(self, id):
-        pipeline = self.storage.get_item_from_collection_by_id("entities", id)
-        if not pipeline or pipeline.get("type") != "pipeline":
+        pipeline = load_pipeline(self, id)
+        if not pipeline:
             return {"message": f"Pipeline with id {id} not found"}, 404
 
         processors = load_pipeline_components(pipeline)
@@ -52,10 +54,9 @@ class _PipelineExportBase(DishacledBaseResource):
                 **report.to_dict(),
             }, 409
 
-        base_uri = getenv("PIPELINE_EXPORT_BASE_URI", request.url_root).rstrip("/")
-        ttl = self.serialize(
-            pipeline, processors, base_uri=f"{base_uri}/pipelines/{id}/"
-        )
+        # the same prefix the published graph is built on, so a downloaded
+        # definition and the one in the store name the same things
+        ttl = self.serialize(pipeline, processors, base_uri=pipeline_base_uri(id))
         if not report.is_valid:
             ttl = report.as_turtle_comments() + ttl
 

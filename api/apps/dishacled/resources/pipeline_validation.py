@@ -6,7 +6,10 @@ consults before letting a pipeline out of the system.
 
 from apps.dishacled.pipeline.validation import validate_pipeline
 from apps.dishacled.resources.base_resource import DishacledBaseResource
-from apps.dishacled.resources.pipeline_components import load_pipeline_components
+from apps.dishacled.resources.pipeline_components import (
+    load_pipeline,
+    load_pipeline_components,
+)
 from flask import Blueprint, request
 from flask_restful import Api
 from inuits_policy_based_auth import RequestContext
@@ -20,8 +23,8 @@ api = Api(api_bp)
 class PipelineValidation(DishacledBaseResource):
     @apply_policies(RequestContext(request))
     def get(self, id):
-        pipeline = self.storage.get_item_from_collection_by_id("entities", id)
-        if not pipeline or pipeline.get("type") != "pipeline":
+        pipeline = load_pipeline(self, id)
+        if not pipeline:
             return {"message": f"Pipeline with id {id} not found"}, 404
 
         components = load_pipeline_components(pipeline)

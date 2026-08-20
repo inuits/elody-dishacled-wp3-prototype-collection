@@ -1,9 +1,19 @@
+"""Entity routes.
+
+Pipelines are addressed through these same routes but are not stored here: the
+pipeline configuration declares `storage_type: "sparql"`, so the framework
+routes their reads and writes to the triple store. That routing is what
+replaced the publish-after-save this module used to do -- writing *is*
+publishing now, so there is nothing left to mirror. See
+`docs/pipeline-storage.md`.
+"""
+
 from apps.dishacled.resources.base_resource import DishacledBaseResource
 from flask import Blueprint, request
 from flask_restful import Api
 from inuits_policy_based_auth import RequestContext
 from policy_factory import apply_policies
-from resources.entity import Entity, EntityMediafiles, EntityDetail
+from resources.entity import Entity, EntityDetail
 from resources.generic_object import GenericObjectDetail
 
 api_bp = Blueprint("entity", __name__)
