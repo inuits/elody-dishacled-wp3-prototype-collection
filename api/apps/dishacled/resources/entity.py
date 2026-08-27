@@ -8,6 +8,7 @@ publishing now, so there is nothing left to mirror. See
 `docs/pipeline-storage.md`.
 """
 
+from apps.dishacled.pipeline.publication import IncompletePipeline
 from apps.dishacled.resources.base_resource import DishacledBaseResource
 from flask import Blueprint, request
 from flask_restful import Api
@@ -30,6 +31,20 @@ class DishacledEntity(DishacledBaseResource, Entity):
         return super().post()
 
 
+def _refused(incomplete: IncompletePipeline):
+    """409 rather than 500, and say what could not be described.
+
+    A pipeline whose components cannot all be read is not a bad request and not
+    a server fault -- it is a save that must not go through, because the store
+    holds the only copy and writing a shorter definition would delete a step.
+    The client gets the reason and can retry; the pipeline is untouched.
+    """
+    return {
+        "message": str(incomplete),
+        "unrepresented": incomplete.keys,
+    }, 409
+
+
 class DishacledEntityDetail(DishacledBaseResource, EntityDetail):
     @apply_policies(RequestContext(request))
     def get(self, id):
@@ -37,11 +52,17 @@ class DishacledEntityDetail(DishacledBaseResource, EntityDetail):
 
     @apply_policies(RequestContext(request))
     def put(self, id):
-        return super().put(id)
+        try:
+            return super().put(id)
+        except IncompletePipeline as incomplete:
+            return _refused(incomplete)
 
     @apply_policies(RequestContext(request))
     def patch(self, id):
-        return super().patch(id)
+        try:
+            return super().patch(id)
+        except IncompletePipeline as incomplete:
+            return _refused(incomplete)
 
     @apply_policies(RequestContext(request))
     def delete(self, id):

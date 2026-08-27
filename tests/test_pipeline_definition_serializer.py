@@ -698,6 +698,28 @@ class TestToolchainPipelineGenerator:
         after = self._violations(self._export(relations, components))
         assert after - baseline == set()
 
+    def test_a_definition_without_a_fragment_compiles_against_the_catalog_graph(self):
+        """The fragment is removable once the store describes the components.
+
+        `?catalog=false` is only a real option if what the catalog graph holds
+        is enough on its own, so the graphs Elody publishes
+        (`pipeline/catalog.py`) are fed in exactly where the fragment used to
+        be, and the same bar applies: no violation the shipped catalog does not
+        already have.
+        """
+        from apps.dishacled.pipeline.catalog import component_turtle
+
+        relations, components = self._demo_chain()
+        named = sorted({relation["key"] for relation in relations})
+        definition = PipelineDefinitionSerializer(
+            base_uri=BASE, include_catalog=False
+        ).serialize(make_pipeline(relations), components)
+        catalog = "\n".join(component_turtle(components[key]) for key in named)
+
+        baseline = self._violations()
+        after = self._violations(f"{catalog}\n{definition}")
+        assert after - baseline == set()
+
     def _compile(self, relations, components):
         from compilers import PipelineGenerator, ProjectBuilder
 

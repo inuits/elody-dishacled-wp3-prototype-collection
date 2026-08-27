@@ -600,8 +600,9 @@ class TestBundledDemoComponents:
     def test_the_mm_violation_is_located_and_readable(self, components):
         violation = validate_pipeline(self.mm_chain(), components).violations[0]
         payload = violation.to_dict()
-        assert payload["from"] == "local--http-poller-mm|output"
-        assert payload["to"] == "local--threshold-monitor-cm|input"
+        # located by step, which is what the user sees on the canvas
+        assert payload["from"] == "http-poller-mm|output"
+        assert payload["to"] == "threshold-monitor-cm|input"
         assert "HTTP poller (mm)" in payload["message"]
         assert "Threshold monitor (cm)" in payload["message"]
 

@@ -224,9 +224,12 @@ class TestConnectionsForPipeline:
         connections = connections_for_pipeline(pipeline, COMPONENTS)
         assert len(connections) == 1
         connection = connections[0]
-        assert connection.source == "local--http-poller-cm"
+        # the two ends are *steps*; the components behind them travel alongside
+        assert connection.source == "http-poller-cm"
+        assert connection.source_key == "local--http-poller-cm"
         assert connection.source_port == "output"
-        assert connection.target == "local--threshold-monitor-cm"
+        assert connection.target == "threshold-monitor-cm"
+        assert connection.target_key == "local--threshold-monitor-cm"
         assert connection.target_port == "input"
 
     def test_connection_is_directed(self):
@@ -327,7 +330,8 @@ class TestConnectionsForPipeline:
             ]
         )
         connection = connections_for_pipeline(pipeline, COMPONENTS)[0]
-        assert connection.source == "local--sensor-feed-cm"
+        assert connection.source == "sensor-feed-cm"
+        assert connection.source_key == "local--sensor-feed-cm"
         assert connection.source_shape == CM_SHAPE
 
     def test_channel_defaults_to_a_derived_name(self):
@@ -425,8 +429,10 @@ class TestConnectionsForPipeline:
             ]
         )
         connection = connections_for_pipeline(pipeline, COMPONENTS)[0]
+        # identified by the steps it joins, so two steps of one component
+        # are two connections rather than one repeated
         assert connection.id == (
-            "local--http-poller-cm|output->local--threshold-monitor-cm|input"
+            "http-poller-cm|output->threshold-monitor-cm|input"
         )
 
     def test_to_dict_exposes_the_state_placeholders(self):
@@ -587,7 +593,8 @@ class TestBundledCatalogComponents:
             ]
         )
         connection = connections_for_pipeline(pipeline, components)[0]
-        assert connection.source == "local--sensor-feed-cm"
+        assert connection.source == "sensor-feed-cm"
+        assert connection.source_key == "local--sensor-feed-cm"
         assert connection.is_shape_match is True
 
 

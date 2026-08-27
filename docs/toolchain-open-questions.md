@@ -50,18 +50,48 @@ exists, call it, or stay deliberately separate as a fast editor-time check with
 the toolchain's as the authority at build time? Worth settling before either
 side hardens.
 
-## 4. Should Elody ship a catalog fragment at all?
+## 4. Should Elody ship a catalog fragment at all? — answered by doing it
 
 A pipeline definition only names its components; their identity, dependencies
 and shapes live in the catalog. Elody knows components the toolchain catalog
-does not — anything discovered on GitHub — so today the export carries a
-fragment describing them, and `?catalog=false` turns it off.
+does not — anything discovered on GitHub, plus the interim contract catalog —
+so the export carried a fragment describing them, and `?catalog=false` turned it
+off.
 
-The alternative is that Elody-discovered components get pushed into the central
-catalog and the export names them only.
+**Taken the other way, as the architecture implies:** Elody now publishes the
+components it knows about into a shared catalog graph, one named graph per
+component, in the discovery-spec vocabulary
+([component-catalog.md](component-catalog.md)). A discovery service reading the
+store sees components without opening any pipeline, and a definition can
+reference a component by IRI alone.
 
-**Question:** which way is intended? The fragment works and merges cleanly, but
-it means the same component can be described in two places.
+Three things are ours and settled: the fragment and the published description
+are built by one serializer (so they cannot say different things — asserted by
+isomorphism, not assumed); publishing is an idempotent whole-graph `PUT`; and
+Elody never writes outside its own graphs, so it cannot overwrite the toolchain
+catalog even by accident.
+
+**What we still need from you:**
+
+* **Koen — the graph name.** `http://mu.semte.ch/graphs/catalog/<url-encoded
+  component IRI>`, aligned with the pipeline-definition and errors graphs.
+  Confirm it, or say what `app-dcat-catalog` wants: one graph, a prefix, or
+  federation. It is one environment variable on our side.
+* **Thomas — precedence.** As implemented the toolchain catalog wins for
+  anything it describes and Elody fills the gaps; a component the catalog
+  catches up on is *withdrawn* from Elody's graph on the next publish, so the
+  duplicate does not outlive the reason for it. The opposite rule — Elody's
+  live GitHub reading is fresher than a checked-in file — is defensible too.
+  We would rather it were a decision than a default.
+
+**Not done, deliberately:** the definition export still ships the fragment by
+default. Elody reads its own pipelines back out of the store, and the reverse
+mapping needs the fragment's `dct:identifier` and config shape to do it, so
+dropping it makes a pipeline publishable but unreadable. Making the read side
+resolve components from the catalog graph is the remaining step, and it should
+be written once the graph convention above is settled rather than twice.
+`DEFINITION_INCLUDE_CATALOG=false` already flips it for a consumer that reads
+the catalog graph.
 
 ## 4b. Named graphs for published pipeline definitions
 
@@ -89,7 +119,7 @@ writer has to present.
 in the graph rather than mirrored into it (`docs/pipeline-storage.md`), so Elody
 has to be able to read a definition back. A step names its component by IRI,
 which the toolchain wants, but Elody addresses the same component as a document
-(`rdf-connect--shacl-processor-ts`) and that is the key it stores the step
+(`rdf-connect--shacl-processor-ts--Validate`) and that is the key it stores the step
 under. So the export emits `dct:identifier` on the pipeline, on each component
 in the fragment and on each dataset. The alternative — resolving the IRI by
 listing components from GitHub on every read — is slower and loses a step as

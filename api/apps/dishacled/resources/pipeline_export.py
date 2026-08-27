@@ -1,3 +1,5 @@
+from os import getenv
+
 from apps.dishacled.pipeline.publication import pipeline_base_uri
 from apps.dishacled.pipeline.validation import validate_pipeline
 from apps.dishacled.resources.base_resource import DishacledBaseResource
@@ -37,6 +39,7 @@ class _PipelineExportBase(DishacledBaseResource):
     filename_prefix = "pipeline"
 
     def _export(self, id):
+        self.unrepresented: list = []
         pipeline = load_pipeline(self, id)
         if not pipeline:
             return {"message": f"Pipeline with id {id} not found"}, 404
@@ -62,6 +65,12 @@ class _PipelineExportBase(DishacledBaseResource):
 
         response = make_response(ttl)
         response.headers["Content-Type"] = "text/turtle"
+        if self.unrepresented:
+            # a download that quietly leaves a step out is a pipeline someone
+            # will deploy and wonder about
+            response.headers["X-Pipeline-Unrepresented"] = ",".join(
+                self.unrepresented
+            )
         response.headers["Content-Disposition"] = (
             f"attachment; filename={self.filename_prefix}-{id}.ttl"
         )
@@ -76,7 +85,10 @@ class PipelineExport(_PipelineExportBase):
     filename_prefix = "pipeline"
 
     def serialize(self, pipeline, processors, base_uri):
-        return PipelineTtlSerializer(base_uri=base_uri).serialize(pipeline, processors)
+        serializer = PipelineTtlSerializer(base_uri=base_uri)
+        ttl = serializer.serialize(pipeline, processors)
+        self.unrepresented = serializer.unrepresented
+        return ttl
 
     @apply_policies(RequestContext(request))
     def get(self, id):
@@ -87,18 +99,35 @@ class PipelineDefinitionExport(_PipelineExportBase):
     """The toolchain `tcs:PipelineDefinition` the pipeline generator compiles.
 
     `?catalog=false` drops the catalog fragment, for the case where every
-    component is already declared in the toolchain catalog and re-declaring
-    them would merge two descriptions of the same component.
+    component is already declared in a catalog the reader has -- the toolchain's
+    own, or the catalog graph Elody now publishes into
+    (`pipeline/catalog.py`). Re-declaring them would then merge two
+    descriptions of the same component.
+
+    Which way round the default goes is `DEFINITION_INCLUDE_CATALOG`, because
+    it depends on the reader rather than on the pipeline: an environment whose
+    consumers all read the shared catalog graph wants the definition to name
+    components and nothing more, and one that hands a file to someone wants the
+    file to stand alone. It still defaults to shipping the fragment -- see
+    `docs/component-catalog.md` for what has to be true before that flips.
     """
 
     filename_prefix = "pipeline-definition"
 
     def serialize(self, pipeline, processors, base_uri):
         catalog_param = request.args.get("catalog")
-        return PipelineDefinitionSerializer(
-            base_uri=base_uri,
-            include_catalog=catalog_param is None or _is_true(catalog_param),
-        ).serialize(pipeline, processors)
+        if catalog_param is None:
+            include_catalog = _is_true(
+                getenv("DEFINITION_INCLUDE_CATALOG", "true")
+            )
+        else:
+            include_catalog = _is_true(catalog_param)
+        serializer = PipelineDefinitionSerializer(
+            base_uri=base_uri, include_catalog=include_catalog
+        )
+        ttl = serializer.serialize(pipeline, processors)
+        self.unrepresented = serializer.unrepresented
+        return ttl
 
     @apply_policies(RequestContext(request))
     def get(self, id):

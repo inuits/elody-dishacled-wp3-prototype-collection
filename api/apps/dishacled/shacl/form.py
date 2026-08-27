@@ -9,6 +9,8 @@ sh:class, sh:in, sh:minCount) select form widgets and validation.
 """
 
 import re
+from copy import deepcopy
+from functools import lru_cache
 
 from apps.dishacled.shacl.parser import ShaclProperty
 from apps.dishacled.shacl.shui import ShuiFormBuilder, UiNode
@@ -44,6 +46,12 @@ _FIELD_TYPE_MAP = {
 
 # input_field_types that resolve to a channel dropdown (rdfc:Reader/Writer/Channel)
 _CHANNEL_FIELD_TYPES = {"hasWriterField", "channelRelationField"}
+
+
+# One entry per (document, channel list, class) asked about. The channel list is
+# what makes this bigger than the number of documents in play: the same form is
+# derived once with the live channels and once without.
+_FORM_CACHE_SIZE = 512
 
 
 # Words rendered in uppercase when humanizing parameter names into labels.
@@ -165,15 +173,32 @@ def _ui_node_to_input_field(
 def shacl_to_form_fields(
     ttl_string: str,
     channel_options: list | None = None,
+    target_class=None,
 ) -> dict:
     """Derive Elody nested form fields from a processor's SHACL via SHACL 1.2 UI.
 
     SHACL -> SHACL 1.2 UI tree (ShuiFormBuilder) -> Elody modalFormFields. The
     main processor shape's properties become top-level fields; nested node
     shapes become inputFieldWithSubFields (shui:DetailsEditor).
+
+    Cached on its arguments, because a listing derives the same form once per
+    processor of a repository and again on every request, and building it means
+    walking the shape graph. A deep copy is handed out: the result goes onto a
+    component document that serializers and the export then add to.
     """
-    channel_options = channel_options or []
-    root = ShuiFormBuilder(ttl_string).build_tree()
+    return deepcopy(
+        _form_fields(ttl_string, tuple(channel_options or []), target_class)
+    )
+
+
+@lru_cache(maxsize=_FORM_CACHE_SIZE)
+def _form_fields(
+    ttl_string: str,
+    channel_options: tuple,
+    target_class=None,
+) -> dict:
+    channel_options = list(channel_options)
+    root = ShuiFormBuilder(ttl_string, target_class).build_tree()
     ordered = sorted(
         root.children,
         key=lambda n: n.order if n.order is not None else float("inf"),

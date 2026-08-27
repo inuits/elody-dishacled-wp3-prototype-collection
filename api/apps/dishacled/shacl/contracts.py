@@ -37,6 +37,7 @@ from pathlib import Path
 from rdflib import BNode, Graph, Literal, Namespace, RDF, RDFS, URIRef
 
 from apps.dishacled.pipeline.connections import DATASET_OUTPUT_PORT
+from apps.dishacled.shacl.graphs import parsed_graph
 from apps.dishacled.shacl.parser import ShaclParser, ShaclProperty
 
 
@@ -126,6 +127,80 @@ def local_id_for(component_iri: str) -> str:
     return f"{LOCAL_ID_PREFIX}{_kebab(_local_name(component_iri))}"
 
 
+# Parsing turtle is the expensive part of discovery and the same file is asked
+# about repeatedly -- is it valid, which processors does it declare, which
+# classes do its shapes target, does it declare *this* class. Keyed by the file
+# content, so it is safe across repositories and stale for nothing.
+_PARSE_CACHE_SIZE = 512
+
+
+@lru_cache(maxsize=_PARSE_CACHE_SIZE)
+def _parse_processor_classes(ttl_string: str) -> tuple[str, ...]:
+    g = parsed_graph(ttl_string)
+    if g is None:
+        return ()
+
+    return tuple(
+        sorted(
+            str(s)
+            for s, p, o in g
+            if o == RDFC.Processor
+            and str(p).split("#")[-1].endswith("ImplementationOf")
+        )
+    )
+
+
+def processor_classes_from_ttl(ttl_string: str) -> list[str]:
+    """Every component IRI a processor file declares an implementation of.
+
+    A repository often declares several: `file-utils-processors-ts` holds
+    GlobRead, FolderRead, Envsub and five more in one file. Each is a component
+    in its own right, so each has to be findable -- and the order has to be
+    stable, because it decides which component a repository-level id resolves
+    to. Graph iteration order is not, hence the sort.
+
+    A fresh list each time: the cache holds the tuple, so a caller that mutates
+    what it gets back cannot corrupt the next caller's answer.
+    """
+    return list(_parse_processor_classes(ttl_string))
+
+
+processor_classes_from_ttl.cache_clear = _parse_processor_classes.cache_clear
+processor_classes_from_ttl.cache_info = _parse_processor_classes.cache_info
+
+
+@lru_cache(maxsize=_PARSE_CACHE_SIZE)
+def _parse_shape_target_classes(ttl_string: str) -> tuple[str, ...]:
+    g = parsed_graph(ttl_string)
+    if g is None:
+        return ()
+
+    return tuple(
+        sorted(
+            {
+                str(target)
+                for shape in g.subjects(RDF.type, SH.NodeShape)
+                if (target := g.value(shape, SH.targetClass)) is not None
+            }
+        )
+    )
+
+
+def shape_target_classes_from_ttl(ttl_string: str) -> list[str]:
+    """Every class a NodeShape in this file targets, in a fixed order.
+
+    The weaker evidence: a processor that never writes
+    `rdfc:*ImplementationOf rdfc:Processor` -- older files, and anything
+    described by a shape alone -- is still a component, and its shape's
+    `sh:targetClass` is the only name it has.
+    """
+    return list(_parse_shape_target_classes(ttl_string))
+
+
+shape_target_classes_from_ttl.cache_clear = _parse_shape_target_classes.cache_clear
+shape_target_classes_from_ttl.cache_info = _parse_shape_target_classes.cache_info
+
+
 def component_iri_from_ttl(ttl_string: str) -> str | None:
     """The component IRI a processor's own TTL implements.
 
@@ -133,17 +208,13 @@ def component_iri_from_ttl(ttl_string: str) -> str | None:
     entry in this catalog. Matches any runtime's implementation predicate
     (`rdfc:jsImplementationOf`, `pyImplementationOf`, ...), the same way
     ShaclParser.parse_main_processor_properties picks the main shape.
-    """
-    try:
-        g = Graph()
-        g.parse(data=ttl_string, format="turtle")
-    except Exception:
-        return None
 
-    for s, p, o in g:
-        if o == RDFC.Processor and str(p).split("#")[-1].endswith("ImplementationOf"):
-            return str(s)
-    return None
+    A file declaring more than one processor has more than one answer; this
+    returns the first of them, which is only meaningful because the order is
+    fixed. Prefer `processor_classes_from_ttl` wherever all of them matter.
+    """
+    classes = processor_classes_from_ttl(ttl_string)
+    return classes[0] if classes else None
 
 
 def _first_value(g: Graph, subject, predicates):
@@ -159,12 +230,30 @@ def extract_shape_graph(g: Graph, node) -> Graph:
 
     Concise-bounded-description style: every triple on `node`, recursing into
     blank-node objects (which is how `sh:property` and `sh:in` RDF lists are
-    written) and into named shapes referenced via `sh:node`/`sh:class`, so the
+    written) and into the shapes referenced via `sh:node`/`sh:class`, so the
     result validates on its own without the rest of the catalog.
+
+    A referenced *class* is followed to the shape that targets it, not only to a
+    shape that happens to be named by that IRI. Processor files write nested
+    shapes anonymously --
+
+        sh:property [ sh:class rdfc:IngestConfig ; ... ] .
+        [] a sh:NodeShape ; sh:targetClass rdfc:IngestConfig ; ...
+
+    -- so `rdfc:IngestConfig` is never itself a `sh:NodeShape`, and following
+    only that left every nested block behind. A definition missing them is not
+    self-contained: reading it back cannot decode nested config, and the next
+    save writes the pipeline without it.
     """
     out = Graph()
     for prefix, namespace in g.namespaces():
         out.bind(prefix, namespace)
+
+    shapes_by_target: dict = {}
+    for shape in g.subjects(RDF.type, SH.NodeShape):
+        target = g.value(shape, SH.targetClass)
+        if target is not None:
+            shapes_by_target.setdefault(target, []).append(shape)
 
     visited = set()
 
@@ -176,8 +265,12 @@ def extract_shape_graph(g: Graph, node) -> Graph:
             out.add((subject, predicate, obj))
             if isinstance(obj, BNode):
                 walk(obj)
-            elif isinstance(obj, URIRef) and (obj, RDF.type, SH.NodeShape) in g:
-                walk(obj)
+            elif isinstance(obj, URIRef):
+                if (obj, RDF.type, SH.NodeShape) in g:
+                    walk(obj)
+                elif predicate in (SH.node, SH["class"]):
+                    for shape in shapes_by_target.get(obj, []):
+                        walk(shape)
 
     walk(node)
     return out
@@ -416,15 +509,35 @@ class ContractCatalog:
     # -- internals ---------------------------------------------------------
 
     def _discover(self) -> list[ComponentContract]:
+        """Every component this catalog says something curated about.
+
+        Two kinds of thing are worth stating here, and either is enough on its
+        own: a **shape** in one of the roles, and **deployment coordinates**.
+        The second matters for a jvm or py processor, which has no npm manifest
+        for the coordinates to be read off -- so if the catalog cannot carry
+        them, nothing can, and the exported pipeline names a class the runner
+        has no way to resolve.
+
+        A subject with neither is not a contract: a `dcat:qualifiedRelation`
+        carrying no role we understand does not make one, and neither does a
+        stray `owl:imports` on something that is not declared a component.
+        """
         g = self._graph
         contracts = []
-        for subject in set(g.subjects(QUALIFIED_RELATION, None)):
+
+        candidates = set(g.subjects(QUALIFIED_RELATION, None))
+        candidates |= {
+            subject
+            for subject in g.subjects(RDF.type, TCS.PipelineComponent)
+            if _deployment_for(g, subject) != Deployment()
+        }
+
+        for subject in candidates:
             shapes = {
                 role: self._shape_for_role(subject, role) for role in ROLES
             }
-            if not any(shapes.values()):
-                # a qualifiedRelation carrying no role we understand is not a
-                # contract -- do not invent a component for it
+            deployment = _deployment_for(g, subject)
+            if not any(shapes.values()) and deployment == Deployment():
                 continue
             is_dataset = any(
                 (subject, RDF.type, t) in g for t in DATASET_TYPES
@@ -438,7 +551,7 @@ class ContractCatalog:
                     config_shape=shapes["config"],
                     input_shape=shapes["input"],
                     output_shape=shapes["output"],
-                    deployment=_deployment_for(g, subject),
+                    deployment=deployment,
                     landing_page=_first_value(g, subject, (DCAT.landingPage,)),
                 )
             )

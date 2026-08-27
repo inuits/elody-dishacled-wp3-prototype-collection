@@ -31,13 +31,16 @@ class ProcessorShuiShape(DishacledBaseResource):
         if not processor:
             return {"message": f"Processor with id {id} not found"}, 404
 
-        raw_ttl = (processor.get("data") or {}).get("rawTtl")
+        data = processor.get("data") or {}
+        raw_ttl = data.get("rawTtl")
         if not raw_ttl:
             return {
                 "message": f"Processor {id} has no SHACL shape to derive a UI from"
             }, 404
 
-        shui_ttl = ShuiFormBuilder(raw_ttl).to_ttl()
+        # the class this component is, so a repository declaring several
+        # processors presents the UI of the one that was asked for
+        shui_ttl = ShuiFormBuilder(raw_ttl, data.get("componentIri")).to_ttl()
 
         response = make_response(shui_ttl)
         response.headers["Content-Type"] = "text/turtle; charset=utf-8"

@@ -591,3 +591,28 @@ demo:AlertStore a dcat:Dataset ;
     dcat:hadRole tcs:outputShape ;
     dcterms:relation lblodsh:ErrorShape ;
   ] .
+
+#################################################################
+# rml-processor-jvm -- deployment coordinates only
+#
+# An overlay (`dcat:landingPage`): the component itself is discovered on
+# GitHub, and this entry adds the one thing the repository cannot supply. A
+# jvm processor has no package.json or pyproject.toml for coordinates to be
+# read off, so without this the exported pipeline names `rdfc:RmlMapper` and
+# the runner has nothing to resolve it from -- it starts, finds no processor
+# definition, and runs nothing.
+#
+# The path is the conventional one: it is where the RDF-Connect tutorial and
+# the toolchain's own demonstrator put the built jar, relative to the pipeline
+# file. Change it here if your build puts it elsewhere. The runner's own
+# definition is separate and is configuration -- RDFC_JVM_RUNNER_IMPORT.
+#
+# No shapes: the processor's own `index.ttl` already describes its config, and
+# restating it here would be a second copy to keep in step.
+#################################################################
+
+rdfc:RmlMapper a tcs:PipelineComponent, dcat:DataService ;
+  rdfs:label "RML mapper" ;
+  rdfs:comment "Maps source data to RDF with an RML mapping." ;
+  dcat:landingPage <https://github.com/rdf-connect/rml-processor-jvm> ;
+  owl:imports <./build/plugins/rml-processor-jvm-master-SNAPSHOT-all.jar> .

@@ -56,6 +56,7 @@ from os import getenv
 import requests
 from rdflib import Graph, Literal, RDFS
 
+from apps.dishacled.pipeline import catalog
 from apps.dishacled.pipeline.validation import validate_pipeline
 from apps.dishacled.serializers.pipeline_definition_serializer import (
     PipelineDefinitionSerializer,
@@ -115,6 +116,25 @@ def _import_base() -> str:
     return getenv("PIPELINE_IMPORT_BASE", "").strip() or IMPORT_BASE
 
 
+class IncompletePipeline(Exception):
+    """A definition could not represent every step, so it must not be written.
+
+    The store is a pipeline's only home and a save is a whole-graph PUT, so
+    writing a definition that is missing a step deletes that step -- and the
+    usual reason for missing one is transient: GitHub rate limited or offline,
+    a repository renamed. Refusing the write keeps the pipeline as it was; the
+    next save, once the component can be described again, writes it whole.
+    """
+
+    def __init__(self, keys):
+        self.keys = list(keys)
+        super().__init__(
+            "Not every processor of this pipeline could be described: "
+            + ", ".join(self.keys)
+            + ". Nothing was written, so the pipeline is unchanged."
+        )
+
+
 def _publish_invalid() -> bool:
     return _is_true(getenv("PIPELINE_PUBLISH_INVALID", ""))
 
@@ -163,6 +183,8 @@ def definition_turtle(pipeline, components, report=None) -> str:
     pipeline_id = pipeline.get("_id")
     serializer = PipelineDefinitionSerializer(base_uri=pipeline_base_uri(pipeline_id))
     ttl = serializer.serialize(pipeline, components)
+    if serializer.unrepresented:
+        raise IncompletePipeline(serializer.unrepresented)
 
     graph = Graph()
     graph.parse(data=ttl, format="turtle", publicID=_import_base())
@@ -200,7 +222,28 @@ def definition_for_store(pipeline, *, components=None) -> str:
             "Set PIPELINE_PUBLISH_INVALID=true to publish it anyway."
         )
         return ""
+
+    publish_catalog_entries(components.values())
     return definition_turtle(pipeline, components, report)
+
+
+def publish_catalog_entries(components) -> None:
+    """Make sure the store describes the components this definition names.
+
+    A definition that references a component by IRI alone is only readable if
+    something in the store says what that IRI is, and Elody is the only thing
+    that knows -- the component was discovered on GitHub or declared in the
+    interim contract catalog (see `catalog.py`). Publishing them alongside the
+    definition is what lets the fragment go away.
+
+    It is a side effect of a save, so it cannot be allowed to fail one: a
+    catalog write that does not happen leaves the description in the fragment,
+    where it has always been.
+    """
+    try:
+        catalog.publish_components(components)
+    except Exception as error:  # pragma: no cover - defensive
+        log.warning(f"Could not publish catalog entries: {error}")
 
 
 def publish_pipeline(pipeline, *, components=None) -> bool:
@@ -214,7 +257,12 @@ def publish_pipeline(pipeline, *, components=None) -> bool:
     if not graph or not _endpoint():
         return False
 
-    ttl = definition_for_store(pipeline, components=components)
+    try:
+        ttl = definition_for_store(pipeline, components=components)
+    except IncompletePipeline as incomplete:
+        # not a withdrawal: leave the store exactly as it is
+        log.error(f"Not publishing pipeline {pipeline.get('_id')}: {incomplete}")
+        return False
     if not ttl:
         # withdraw an earlier version, so nothing goes on reading a definition
         # of this pipeline that no longer validates

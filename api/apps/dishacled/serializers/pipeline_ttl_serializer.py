@@ -1,13 +1,18 @@
 import re
+from os import getenv
 
 from rdflib import BNode, Graph, Literal, Namespace, RDF, URIRef
 
 from apps.dishacled.pipeline.connections import (
     connections_for_pipeline,
+    instances_of,
     nest_metadata,
 )
+from apps.dishacled.shacl.graphs import parsed_graph
 
 RDFC = Namespace("https://w3id.org/rdf-connect#")
+
+OWL = Namespace("http://www.w3.org/2002/07/owl#")
 
 RUNTIME_TO_RUNNER = {
     "ts": RDFC.NodeRunner,
@@ -15,7 +20,34 @@ RUNTIME_TO_RUNNER = {
     "jvm": RDFC.JvmRunner,
 }
 
+# Where each runner's own definition lives, relative to the pipeline file. The
+# runner is not a component -- nothing discovers it -- so the pipeline has to
+# name it, and without it the runner class is undefined and the orchestrator
+# starts nothing (the same defect as the toolchain generator's, see
+# `docs/toolchain-open-questions.md` section 7).
+#
+# Only the Node one is knowable: `@rdfc/js-runner` publishes `index.ttl` at a
+# fixed path inside the package. A Python runner's path carries the interpreter
+# version and a JVM runner's is whatever the build produced, so those are
+# configuration -- an invented path is a broken import, which is worse than a
+# missing one.
+def _runner_imports() -> dict:
+    return {
+        RDFC.NodeRunner: getenv(
+            "RDFC_NODE_RUNNER_IMPORT", "./node_modules/@rdfc/js-runner/index.ttl"
+        ).strip(),
+        RDFC.PyRunner: getenv("RDFC_PY_RUNNER_IMPORT", "").strip(),
+        RDFC.JvmRunner: getenv("RDFC_JVM_RUNNER_IMPORT", "").strip(),
+    }
+
 SH = Namespace("http://www.w3.org/ns/shacl#")
+
+# The package-manager IRIs the manifests are read into
+# (`storage/dishacled_httpstore.py`), and the command that installs each.
+INSTALLERS = (
+    ("http://example.org/example/npm", "npm install", "@"),
+    ("http://example.org/example/pip", "pip install", ""),
+)
 XSD_STRING = URIRef("http://www.w3.org/2001/XMLSchema#string")
 
 CHANNEL_CLASSES = {RDFC.Reader, RDFC.Writer, RDFC.Channel}
@@ -46,36 +78,54 @@ class _ShapeIndex:
         self.properties = properties  # name -> {path, datatype, class, nested}
 
     @classmethod
-    def from_ttl(cls, raw_ttl):
-        g = Graph()
-        try:
-            g.parse(data=raw_ttl, format="turtle")
-        except Exception:
-            # a processor with unparseable TTL should not break the whole
-            # pipeline export; its stage is skipped
+    def from_ttl(cls, raw_ttl, target_class=None):
+        """The shape of one processor class in this TTL.
+
+        `target_class` is the class the component says it is
+        (`data.componentIri`), and it is the only reliable answer for a file
+        that declares several processors: which one a guess lands on is not
+        knowable from the file. It is a fallback, not a requirement, so a
+        component stored before components carried their class still exports.
+        """
+        # a processor with unparseable TTL should not break the whole
+        # pipeline export; its stage is skipped
+        g = parsed_graph(raw_ttl)
+        if g is None:
             return None
 
         shapes_by_class = {}
         for node_shape in g.subjects(RDF.type, SH.NodeShape):
-            target_class = g.value(node_shape, SH.targetClass)
-            if target_class is not None:
-                shapes_by_class[target_class] = node_shape
+            shape_target = g.value(node_shape, SH.targetClass)
+            if shape_target is not None:
+                shapes_by_class[shape_target] = node_shape
 
-        # The processor class is the subject of a `rdfc:*ImplementationOf
-        # rdfc:Processor` triple (e.g. rdfc:HttpFetch). Prefer the NodeShape
-        # whose sh:targetClass is that class, so multi-shape processor files
-        # (HttpFetch + HttpFetchAuth + HttpFetchOptions) bind the right shape.
-        processor_classes = {
-            s
-            for s, p, o in g
-            if o == RDFC.Processor and str(p).split("#")[-1].endswith("ImplementationOf")
-        }
+        main_class = None
+        if target_class is not None:
+            candidate = URIRef(str(target_class))
+            if candidate in shapes_by_class:
+                main_class = candidate
 
-        main_class = next(
-            (c for c in processor_classes if c in shapes_by_class), None
-        )
         if main_class is None:
-            main_class = next(iter(shapes_by_class), None)
+            # The processor class is the subject of a `rdfc:*ImplementationOf
+            # rdfc:Processor` triple (e.g. rdfc:HttpFetch). Prefer the NodeShape
+            # whose sh:targetClass is that class, so multi-shape processor files
+            # (HttpFetch + HttpFetchAuth + HttpFetchOptions) bind the right
+            # shape. Sorted, so a file with several processors resolves the same
+            # way in every process -- and the same way the form derivation does.
+            processor_classes = sorted(
+                (
+                    s
+                    for s, p, o in g
+                    if o == RDFC.Processor
+                    and str(p).split("#")[-1].endswith("ImplementationOf")
+                ),
+                key=str,
+            )
+            main_class = next(
+                (c for c in processor_classes if c in shapes_by_class), None
+            )
+        if main_class is None:
+            main_class = next(iter(sorted(shapes_by_class, key=str)), None)
         if main_class is None:
             return None
 
@@ -188,38 +238,61 @@ class PipelineTtlSerializer:
     stored as rawTtl on each githubProcessor entity.
     """
 
-    def __init__(self, base_uri):
+    def __init__(self, base_uri: str = ""):
+        # Document-relative on purpose. The pipeline names itself `<>` and its
+        # stages and channels by bare name, which is what both files known to
+        # run look like: the tutorial's hand-written `pipeline.ttl` and the
+        # toolchain generator's output. It makes the file work wherever it is
+        # put -- and, unlike an absolute Elody IRI, `<>` is the subject a reader
+        # resolves the document's own `owl:imports` against, so there is no
+        # question of the runner looking somewhere we did not write them.
+        #
+        # `base_uri` is accepted because both exports share one call signature
+        # (`resources/pipeline_export.py`); it is deliberately not used to build
+        # IRIs here. The *definition* export is the one whose IRIs have to be
+        # absolute, because it is published into a shared store.
         self.base_uri = base_uri
+        # keys of `hasProcessor` relations that produced no stage
+        self.unrepresented: list = []
 
     def serialize(self, pipeline, processors):
+        self.unrepresented = []
+        self._imported: list = []
         g = Graph()
         g.bind("rdfc", RDFC)
 
-        pipeline_uri = URIRef(self.base_uri)
+        pipeline_uri = URIRef("")  # the document itself
         g.add((pipeline_uri, RDF.type, RDFC.Pipeline))
 
         runner_groups = {}  # runner class URIRef -> [stage URIRef]
         channels = set()
         stages = {}  # processor key -> (stage URIRef, _ShapeIndex)
 
-        for relation in pipeline.get("relations", []):
-            if relation.get("type") != "hasProcessor":
-                continue
-
-            processor = processors.get(relation.get("key"))
+        for instance in instances_of(pipeline, processors):
+            relation = instance.relation
+            key = instance.key
+            processor = processors.get(key)
             if not processor:
+                self._unrepresented(key)
                 continue
 
-            raw_ttl = (processor.get("data") or {}).get("rawTtl")
+            data = processor.get("data") or {}
+            raw_ttl = data.get("rawTtl")
             if not raw_ttl:
+                self._unrepresented(key)
                 continue
-            shape = _ShapeIndex.from_ttl(raw_ttl)
+            # the class the component says it is, not the one a multi-processor
+            # file happens to yield first
+            shape = _ShapeIndex.from_ttl(raw_ttl, data.get("componentIri"))
             if not shape:
+                self._unrepresented(key)
                 continue
 
-            stage_uri = self._stage_uri(processor)
+            # named for the step, not the component: two steps of one
+            # component are two stages with configurations of their own
+            stage_uri = URIRef(instance.id)
             g.add((stage_uri, RDF.type, shape.target_class))
-            stages[relation["key"]] = (stage_uri, shape)
+            stages[instance.id] = (stage_uri, shape)
 
             # A dataset is a source of data, not an implementation, so it is
             # emitted as a stage that can be wired but is never handed to a
@@ -237,6 +310,8 @@ class PipelineTtlSerializer:
 
         self._emit_connections(g, pipeline, processors, stages, channels)
 
+        self._emit_imports(g, pipeline_uri, runner_groups, processors)
+
         for runner, stages_of_runner in runner_groups.items():
             group = BNode()
             g.add((pipeline_uri, RDFC.consistsOf, group))
@@ -248,7 +323,91 @@ class PipelineTtlSerializer:
             g.add((channel_uri, RDF.type, RDFC.Reader))
             g.add((channel_uri, RDF.type, RDFC.Writer))
 
-        return g.serialize(format="turtle")
+        header = self._install_header(processors, self._imported)
+        return header + g.serialize(format="turtle")
+
+    def _install_header(self, processors, targets) -> str:
+        """What has to exist next to this file, as turtle comments.
+
+        The pipeline imports each processor's definition from inside its
+        installed package. When one is missing the orchestrator says
+        `ENOENT ... processors.ttl` and stops -- a true statement about a path,
+        with no hint of where it should have come from. Elody read these
+        coordinates off the repositories to build the imports in the first
+        place, so it can say them.
+        """
+        by_installer: dict = {}
+        for document in processors.values():
+            deployment = (document.get("data") or {}).get("deployment") or {}
+            for package in deployment.get("packages") or []:
+                name = package.get("name")
+                if not name:
+                    continue
+                for supplier, command, joiner in INSTALLERS:
+                    if package.get("supplier") == supplier:
+                        version = package.get("version") or ""
+                        by_installer.setdefault(command, set()).add(
+                            f"{name}{joiner}{version}" if version else name
+                        )
+
+        # imports nothing installs: a jvm jar a build produces, say. Remote ones
+        # resolve themselves, so they are not somebody's homework.
+        unexplained = sorted(
+            target
+            for target in targets
+            if not target.startswith(("http://", "https://"))
+            and not target.startswith("./node_modules/")
+        )
+
+        lines = [
+            "# Runnable RDF-Connect pipeline, exported from Elody.",
+            "#",
+            "# Run it from the directory this file is in -- its imports and file",
+            "# paths are relative to it:",
+            "#",
+            "#   npx rdfc " + "<this file>",
+        ]
+        if by_installer or unexplained:
+            lines += ["#", "# It needs these alongside it:"]
+        for _supplier, command, _joiner in INSTALLERS:
+            packages = by_installer.get(command)
+            if packages:
+                lines += ["#", f"#   {command} " + " ".join(sorted(packages))]
+        if unexplained:
+            lines += ["#", "#   and, from your own build:"]
+            lines += [f"#     {target}" for target in unexplained]
+        return "\n".join(lines) + "\n\n"
+
+    def _emit_imports(self, g, pipeline_uri, runner_groups, processors):
+        """`owl:imports` for the runners in use and every processor definition.
+
+        Relative on purpose: the orchestrator resolves them against the
+        directory the pipeline file is in, and an absolute IRI is not something
+        its importer follows (section 7 again). Order is stable and the runners
+        come first, the way the hand-built demonstrator pipeline writes them.
+        """
+        g.bind("owl", OWL)
+        targets = []
+
+        runner_imports = _runner_imports()
+        for runner in runner_groups:
+            target = runner_imports.get(runner)
+            if target and target not in targets:
+                targets.append(target)
+
+        for document in processors.values():
+            deployment = (document.get("data") or {}).get("deployment") or {}
+            for target in deployment.get("imports") or []:
+                if target and target not in targets:
+                    targets.append(target)
+
+        for target in targets:
+            g.add((pipeline_uri, OWL.imports, URIRef(target)))
+        self._imported = list(targets)
+
+    def _unrepresented(self, key):
+        if key and key not in self.unrepresented:
+            self.unrepresented.append(key)
 
     def _emit_connections(self, g, pipeline, processors, stages, channels):
         """Bind each declared connection's two ports to one shared channel.
@@ -274,7 +433,7 @@ class PipelineTtlSerializer:
             if source_path is None or target_path is None:
                 continue
 
-            channel_uri = URIRef(self.base_uri + _slugify(connection.channel))
+            channel_uri = URIRef(_slugify(connection.channel))
             g.remove((source_uri, source_path, None))
             g.add((source_uri, source_path, channel_uri))
             g.remove((target_uri, target_path, None))
@@ -282,10 +441,6 @@ class PipelineTtlSerializer:
             channels.add(channel_uri)
 
     def _emit_values(self, g, subject, shape, values, channels):
-        emit_config_values(g, subject, shape, values, self.base_uri, channels)
+        emit_config_values(g, subject, shape, values, "", channels)
 
-    def _stage_uri(self, processor):
-        name = _get_metadata_value(processor, "name") or processor.get(
-            "_id", "stage"
-        )
-        return URIRef(self.base_uri + _slugify(name))
+

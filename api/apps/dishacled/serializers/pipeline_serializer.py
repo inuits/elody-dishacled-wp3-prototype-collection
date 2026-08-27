@@ -49,10 +49,12 @@ from apps.dishacled.pipeline.connections import (
     CHANNEL_FIELD,
     CONNECTIONS_KEY,
     DATASET_OUTPUT_PORT,
+    INSTANCE_FIELD,
+    INSTANCE_SEPARATOR,
     PORT_SEPARATOR,
     PROCESSOR_RELATION,
     SOURCE_FIELD,
-    default_channel_name,
+    channel_name_between,
     slugify,
 )
 from apps.dishacled.serializers.pipeline_ttl_serializer import (
@@ -69,6 +71,15 @@ PPLAN = Namespace("http://purl.org/net/p-plan#")
 SH = Namespace("http://www.w3.org/ns/shacl#")
 
 PIPELINE_TYPE = "pipeline"
+
+
+def _instance_of(node) -> str:
+    """A step's id: the last segment of its IRI.
+
+    The export writes `.../step/<instance>`, so the identity travels in the
+    document already and needs no term of its own.
+    """
+    return str(node).rstrip("/").rsplit("/", 1)[-1]
 
 
 def _as_graph(payload) -> Graph | None:
@@ -255,6 +266,7 @@ class PipelineSerializer:
                     "node": node,
                     "component": component,
                     "key": component.identifier,
+                    "instance": _instance_of(node),
                     "label": str(graph.value(node, RDFS.label) or ""),
                     "embedded": self._embedded(graph, node),
                 }
@@ -326,15 +338,37 @@ class PipelineSerializer:
             for channel in graph.objects(step["node"], TCS.writesTo):
                 by_channel_writer[channel] = step
 
+        # Only a component used more than once needs its steps spelled out in
+        # the key: one step is unambiguous as the component, which keeps the
+        # ids of every existing pipeline exactly as they were.
+        repeated = {
+            key
+            for key in (step["key"] for step in steps)
+            if [s["key"] for s in steps].count(key) > 1
+        }
+
         relations = []
         for step in steps:
             metadata = self._config_metadata(graph, step, channel_base)
             metadata += self._connection_metadata(
                 graph, step, by_channel_writer, channel_base
             )
+            instance = step.get("instance")
+            if instance:
+                # the step's identity, so a component used twice comes back as
+                # two steps rather than one -- and so the connections that
+                # name them keep pointing at the right one
+                metadata.append({"key": INSTANCE_FIELD, "value": instance})
             relations.append(
                 {
-                    "key": step["key"],
+                    # keyed by the step, because that is what the UI addresses:
+                    # one row per key, and a config form writes back to the
+                    # relation whose key it was opened on
+                    "key": (
+                        f"{step['key']}{INSTANCE_SEPARATOR}{instance}"
+                        if instance and step["key"] in repeated
+                        else step["key"]
+                    ),
                     "type": PROCESSOR_RELATION,
                     "metadata": metadata,
                 }
@@ -399,7 +433,13 @@ class PipelineSerializer:
             metadata.append(
                 {
                     "key": f"{CONNECTIONS_KEY}.{target_port}.{SOURCE_FIELD}",
-                    "value": f"{producer['key']}{PORT_SEPARATOR}{source_port}",
+                    # the producing *step*, not its component: a component used
+                    # twice is two producers, and naming the component would
+                    # leave which one feeds this port to a guess
+                    "value": (
+                        f"{producer.get('instance') or producer['key']}"
+                        f"{PORT_SEPARATOR}{source_port}"
+                    ),
                 }
             )
             channel_name = self._channel_name(channel, channel_base)
@@ -438,10 +478,16 @@ class PipelineSerializer:
 
     @staticmethod
     def _default_channel(producer, source_port, consumer, target_port) -> str:
-        return default_channel_name(
-            {"metadata": [{"key": "name", "value": producer["label"]}]},
+        """What the channel would be called if nobody named it.
+
+        Derived from the two step ids, the same way the export derives it --
+        otherwise a channel between two steps of one component looks
+        "non-default" here and is written back as an explicit name.
+        """
+        return channel_name_between(
+            producer.get("instance") or producer["label"],
             source_port,
-            {"metadata": [{"key": "name", "value": consumer["label"]}]},
+            consumer.get("instance") or consumer["label"],
             target_port,
         )
 

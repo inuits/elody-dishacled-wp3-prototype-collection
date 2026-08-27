@@ -67,7 +67,9 @@ class LocalComponentSource:
     def _to_document(self, contract: ComponentContract) -> dict:
         raw_ttl = contract.to_raw_ttl()
         try:
-            form_fields = shacl_to_form_fields(raw_ttl)
+            # a catalog entry knows its class outright, so the form is that
+            # class's shape rather than whichever the file yields first
+            form_fields = shacl_to_form_fields(raw_ttl, target_class=contract.iri)
         except Exception:
             form_fields = {}
 

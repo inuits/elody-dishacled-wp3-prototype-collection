@@ -25,6 +25,11 @@ from apps.dishacled.serializers.pipeline_ttl_serializer import (
 
 
 RDFC = Namespace("https://w3id.org/rdf-connect#")
+# Where the exported document is read from. The export is document-relative --
+# `<>` for the pipeline, bare names for stages and channels, the shape both
+# files known to run use -- so every assertion below parses it with a base, the
+# way the runner reads it off disk. That the names resolve against wherever the
+# file is put is the property being asserted.
 BASE = "https://elody.local/pipelines/pipeline-1/"
 
 
@@ -182,7 +187,7 @@ def graph():
     serializer = PipelineTtlSerializer(base_uri=BASE)
     ttl = serializer.serialize(PIPELINE, PROCESSORS)
     g = Graph()
-    g.parse(data=ttl, format="turtle")
+    g.parse(data=ttl, format="turtle", publicID=BASE)
     return g
 
 
@@ -249,7 +254,7 @@ class TestStageConfiguration:
             pipeline, {"rdfc--ldes-client": LDES_PROCESSOR}
         )
         g = Graph()
-        g.parse(data=ttl, format="turtle")
+        g.parse(data=ttl, format="turtle", publicID=BASE)
         stage = URIRef(BASE + "ldes-client")
         assert graph_has_no_value(g, stage, RDFC.url)
 
@@ -270,7 +275,7 @@ class TestStageConfiguration:
             pipeline, {"rdfc--ldes-client": LDES_PROCESSOR}
         )
         g = Graph()
-        g.parse(data=ttl, format="turtle")
+        g.parse(data=ttl, format="turtle", publicID=BASE)
         stage = URIRef(BASE + "ldes-client")
         assert graph_has_no_value(g, stage, RDFC.notInShape)
 
@@ -317,7 +322,7 @@ class TestRunnerGrouping:
         serializer = PipelineTtlSerializer(base_uri=BASE)
         ttl = serializer.serialize(pipeline, processors)
         g = Graph()
-        g.parse(data=ttl, format="turtle")
+        g.parse(data=ttl, format="turtle", publicID=BASE)
 
         pipeline_uri = URIRef(BASE)
         runner_nodes = list(g.objects(pipeline_uri, RDFC.consistsOf))
@@ -341,7 +346,7 @@ class TestRunnerGrouping:
         serializer = PipelineTtlSerializer(base_uri=BASE)
         ttl = serializer.serialize(pipeline, {})
         g = Graph()
-        g.parse(data=ttl, format="turtle")
+        g.parse(data=ttl, format="turtle", publicID=BASE)
         assert (URIRef(BASE), RDF.type, RDFC.Pipeline) in g
         assert list(g.objects(URIRef(BASE), RDFC.consistsOf)) == []
 
@@ -352,7 +357,7 @@ class TestEmptyPipeline:
         serializer = PipelineTtlSerializer(base_uri=BASE)
         ttl = serializer.serialize(pipeline, {})
         g = Graph()
-        g.parse(data=ttl, format="turtle")
+        g.parse(data=ttl, format="turtle", publicID=BASE)
         assert (URIRef(BASE), RDF.type, RDFC.Pipeline) in g
 
 
@@ -401,7 +406,7 @@ class TestMultiShapeProcessor:
         serializer = PipelineTtlSerializer(base_uri=BASE)
         ttl = serializer.serialize(pipeline, {"rdfc--http-utils-processor-ts": processor})
         g = Graph()
-        g.parse(data=ttl, format="turtle")
+        g.parse(data=ttl, format="turtle", publicID=BASE)
         stage = URIRef(BASE + "http-utils-processor-ts")
         # typed as the processor class, not the auxiliary HttpFetchAuth shape
         assert (stage, RDF.type, RDFC.HttpFetch) in g
@@ -460,7 +465,7 @@ class TestNestedConfig:
             pipeline, {"rdfc--http-utils": processor}
         )
         g = Graph()
-        g.parse(data=ttl, format="turtle")
+        g.parse(data=ttl, format="turtle", publicID=BASE)
         return g
 
     def test_top_level_url_on_stage(self):
@@ -538,7 +543,7 @@ class TestConnections:
             make_pipeline(relations), processors or CONNECTED_PROCESSORS
         )
         g = Graph()
-        g.parse(data=ttl, format="turtle")
+        g.parse(data=ttl, format="turtle", publicID=BASE)
         return g
 
     CONNECTED = [
@@ -693,7 +698,9 @@ class TestDatasetSource:
         serializer = PipelineTtlSerializer(base_uri=BASE)
         g = Graph()
         g.parse(
-            data=serializer.serialize(pipeline, components), format="turtle"
+            data=serializer.serialize(pipeline, components),
+            format="turtle",
+            publicID=BASE,
         )
         return g
 

@@ -299,16 +299,17 @@ class TestSteps:
         """Two stages of one component are two steps, and stay two relations.
 
         The export gives them distinct step IRIs; both specialise the same
-        component, so both resolve to the same relation key. Collapsing them
-        here would quietly delete a stage of the user's pipeline.
+        component. Each comes back under a key of its own -- `component~step` --
+        because that is what the UI addresses a row and its config form by, and
+        because collapsing them would quietly delete a stage of the pipeline.
         """
         restored = read_back(
             pipeline([relation("acme--poller"), relation("acme--poller")])
         )
 
         assert [r["key"] for r in restored["relations"]] == [
-            "acme--poller",
-            "acme--poller",
+            "acme--poller~pollercm",
+            "acme--poller~pollercm-2",
         ]
 
 
@@ -366,8 +367,10 @@ class TestConfigValues:
 
 class TestConnections:
     def test_a_connection_round_trips(self, restored):
+        # the producing *step*, not its component: `acme--poller` used twice
+        # would be two producers, and the component alone would not say which
         assert relation_metadata(restored, "acme--sink")["connections.input.from"] == (
-            "acme--poller|output"
+            "pollercm|output"
         )
 
     def test_the_channel_is_named_on_both_ends(self, restored):
@@ -434,10 +437,10 @@ class TestConnections:
 
         assert relation_metadata(restored, "acme--monitor")[
             "connections.input.from"
-        ] == "acme--poller|output"
+        ] == "pollercm|output"
         assert relation_metadata(restored, "acme--sink")[
             "connections.input.from"
-        ] == "acme--monitor|output"
+        ] == "monitorcm|output"
 
 
 class TestRoundTripIsStable:

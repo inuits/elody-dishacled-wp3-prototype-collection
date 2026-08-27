@@ -1,6 +1,9 @@
 from dataclasses import dataclass, field
+from functools import lru_cache
 from rdflib import Graph, Namespace, RDF, Literal, URIRef
 from rdflib.collection import Collection
+
+from apps.dishacled.shacl.graphs import namespace_prefixes, parsed_graph
 
 
 SH = Namespace("http://www.w3.org/ns/shacl#")
@@ -43,7 +46,7 @@ class ShaclProperty:
 
 
 def _uri_to_prefixed(uri, graph):
-    for prefix, namespace in graph.namespaces():
+    for prefix, namespace in namespace_prefixes(graph):
         ns_str = str(namespace)
         uri_str = str(uri)
         if uri_str.startswith(ns_str):
@@ -63,8 +66,15 @@ def _local_name(uri):
 
 class ShaclParser:
     def parse(self, ttl_string: str) -> dict[str, list[ShaclProperty]]:
-        g = Graph()
-        g.parse(data=ttl_string, format="turtle")
+        return {
+            class_name: list(properties)
+            for class_name, properties in _parse(ttl_string)
+        }
+
+    def _walk_shapes(self, ttl_string: str) -> dict[str, list[ShaclProperty]]:
+        g = parsed_graph(ttl_string)
+        if g is None:
+            raise ValueError("not turtle")
 
         shapes = {}
 
@@ -86,32 +96,35 @@ class ShaclParser:
         return shapes
 
     def parse_main_processor_properties(
-        self, ttl_string: str
+        self, ttl_string: str, target_class=None
     ) -> list[ShaclProperty]:
-        """Properties of the main processor shape only.
+        """Properties of one processor shape only.
 
         Multi-shape files (e.g. http-utils: HttpFetch + HttpFetchAuth +
-        HttpFetchOptions) otherwise flatten into one big form. The main shape
-        is the one whose sh:targetClass is the subject of a
-        `rdfc:*ImplementationOf rdfc:Processor` triple. Falls back to all
+        HttpFetchOptions) otherwise flatten into one big form. The shape is the
+        one targeting `target_class` when the caller names it -- a file
+        declaring several processors has several answers and only the component
+        knows which it is -- else the first class declaring
+        `rdfc:*ImplementationOf rdfc:Processor`, in IRI order. Falls back to all
         properties if no such shape is found.
         """
-        g = Graph()
-        g.parse(data=ttl_string, format="turtle")
+        return list(_main_processor_properties(ttl_string, target_class))
 
-        processor_classes = {
-            s
-            for s, p, o in g
-            if o == RDFC.Processor
-            and str(p).split("#")[-1].endswith("ImplementationOf")
-        }
+    def _walk_main_processor_properties(
+        self, ttl_string: str, target_class=None
+    ) -> list[ShaclProperty]:
+        g = parsed_graph(ttl_string)
+        if g is None:
+            raise ValueError("not turtle")
 
-        all_props = []
+        shapes_by_class = {}
         for node_shape in g.subjects(RDF.type, SH.NodeShape):
-            target_class = g.value(node_shape, SH.targetClass)
-            if not target_class:
-                continue
-            props = [
+            shape_target = g.value(node_shape, SH.targetClass)
+            if shape_target is not None:
+                shapes_by_class.setdefault(shape_target, node_shape)
+
+        def _properties_of(node_shape):
+            return [
                 prop
                 for prop in (
                     self._parse_property(g, p)
@@ -119,9 +132,29 @@ class ShaclParser:
                 )
                 if prop
             ]
-            if target_class in processor_classes:
-                return props
-            all_props.extend(props)
+
+        if target_class is not None:
+            node_shape = shapes_by_class.get(URIRef(str(target_class)))
+            if node_shape is not None:
+                return _properties_of(node_shape)
+
+        declared = sorted(
+            (
+                s
+                for s, p, o in g
+                if o == RDFC.Processor
+                and str(p).split("#")[-1].endswith("ImplementationOf")
+            ),
+            key=str,
+        )
+        for processor_class in declared:
+            node_shape = shapes_by_class.get(processor_class)
+            if node_shape is not None:
+                return _properties_of(node_shape)
+
+        all_props = []
+        for node_shape in shapes_by_class.values():
+            all_props.extend(_properties_of(node_shape))
         return all_props
 
     def parse_shape_properties(
@@ -138,8 +171,14 @@ class ShaclParser:
         common case for an extracted shape sub-graph); if several are present,
         the first in iteration order is used.
         """
-        g = Graph()
-        g.parse(data=ttl_string, format="turtle")
+        return list(_shape_properties(ttl_string, shape_iri))
+
+    def _walk_shape_properties(
+        self, ttl_string: str, shape_iri: str | None = None
+    ) -> list[ShaclProperty]:
+        g = parsed_graph(ttl_string)
+        if g is None:
+            raise ValueError("not turtle")
 
         if shape_iri:
             shape = URIRef(shape_iri)
@@ -159,8 +198,9 @@ class ShaclParser:
         ]
 
     def parse_processor_metadata(self, ttl_string: str) -> dict:
-        g = Graph()
-        g.parse(data=ttl_string, format="turtle")
+        g = parsed_graph(ttl_string)
+        if g is None:
+            raise ValueError("not turtle")
 
         metadata = {
             "iri": None,
@@ -243,3 +283,39 @@ class ShaclParser:
             return DATATYPE_TO_INPUT_FIELD[datatype_uri]
 
         return "baseTextField"
+
+
+# Every derivation above walks the same read-only graph to the same answer, and
+# a listing asks for it repeatedly: once per processor a repository declares
+# (they share the file) and again on the next request. The graph parse is
+# already shared (`graphs.parsed_graph`); the walk over it was not, and it was
+# the larger half of what a warm listing spent in `rdflib`.
+#
+# Keyed on the document text and the class asked about, so nothing goes stale:
+# a changed file is a different key. The cached value is a tuple and the methods
+# hand out a fresh list of it, so a caller that empties its own copy does not
+# empty everyone's.
+#
+# Sized like the graph cache it sits on top of: an entry beyond the number of
+# (document, class) pairs in play is one that will never be asked for again.
+_DERIVATION_CACHE_SIZE = 512
+
+
+@lru_cache(maxsize=_DERIVATION_CACHE_SIZE)
+def _parse(ttl_string: str) -> tuple:
+    return tuple(
+        (class_name, tuple(properties))
+        for class_name, properties in ShaclParser()._walk_shapes(ttl_string).items()
+    )
+
+
+@lru_cache(maxsize=_DERIVATION_CACHE_SIZE)
+def _main_processor_properties(ttl_string: str, target_class=None) -> tuple:
+    return tuple(
+        ShaclParser()._walk_main_processor_properties(ttl_string, target_class)
+    )
+
+
+@lru_cache(maxsize=_DERIVATION_CACHE_SIZE)
+def _shape_properties(ttl_string: str, shape_iri: str | None = None) -> tuple:
+    return tuple(ShaclParser()._walk_shape_properties(ttl_string, shape_iri))

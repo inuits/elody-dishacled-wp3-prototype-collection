@@ -387,6 +387,9 @@ class TestBundledContractsFixture:
         assert {c.iri for c in overlays} == {
             "https://w3id.org/rdf-connect/threshold-monitor#ThresholdMonitorJs",
             "https://w3id.org/rdf-connect#SPARQLIngest",
+            # deployment coordinates only: a jvm processor has no manifest for
+            # them to be read off the repository (test_contract_deployment_only)
+            "https://w3id.org/rdf-connect#RmlMapper",
         }
 
     def test_every_component_has_config_input_and_output(self):

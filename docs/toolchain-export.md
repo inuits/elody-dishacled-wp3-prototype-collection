@@ -15,6 +15,27 @@ deployable project: `docker-compose.yml`, `rdfc/Dockerfile`,
 Exporting the definition is what makes an Elody-composed pipeline *deployable*
 through the toolchain rather than only runnable by hand.
 
+`export.ttl` is meant to be run as it stands: `npx rdfc export.ttl` in a
+directory where the processors are installed. That needs the pipeline to
+`owl:imports` the definition of every processor it uses *and* of each runner it
+instantiates -- without them those classes are undefined, and the orchestrator
+binds its gRPC port and starts nothing. The processor imports come from each
+component's `deployment.imports` (read off the repository's manifest); the
+runners are named by configuration, because only the Node runner's path is
+knowable:
+
+| Runtime | Import | Source |
+| --- | --- | --- |
+| ts | `./node_modules/@rdfc/js-runner/index.ttl` | fixed inside the published package |
+| py | -- | `RDFC_PY_RUNNER_IMPORT`; the path carries the interpreter version |
+| jvm | -- | `RDFC_JVM_RUNNER_IMPORT`; whatever the build produced |
+
+A **jvm or py processor** has no synthesised import either (no npm manifest to
+read a path from), so its definition has to come from somewhere too: declare
+`owl:imports` for it in the contract catalog
+(`api/apps/dishacled/shacl/catalog/contracts.ttl`), which wins over anything
+read off the repository, or add the line to the exported file by hand.
+
 Both routes share the chain validation: an incompatible pipeline answers
 **409** with the violation list, and `?force=true` exports it anyway with the
 violations prepended as turtle comments.
@@ -28,10 +49,19 @@ reach it without calling Elody at all. See
 
 ## Exporting from the UI
 
-The pipeline detail page has an **Export pipeline definition** entry in its
-overflow (⋮) menu, next to Edit metadata and delete. It downloads exactly what
-`GET /pipelines/<id>/definition.ttl` returns, named by the filename the API
-sets (`pipeline-definition-<id>.ttl`).
+The pipeline detail page's overflow (⋮) menu offers **both**, because which one
+you want depends on what you are about to do with it:
+
+| Menu entry | Route | For |
+| --- | --- | --- |
+| Export runnable pipeline (RDF-Connect) | `export.ttl` | `npx rdfc <file>` |
+| Export pipeline definition (toolchain) | `definition.ttl` | the pipeline generator |
+
+It used to offer only the definition, which is the generator's *input*: handed
+to `npx rdfc` it loads a graph with no `rdfc:Pipeline` in it, so the
+orchestrator binds its port, logs `Starting  processors` with an empty count,
+and runs nothing. The filename is the tell -- `pipeline-definition-<id>.ttl`
+versus `pipeline-<id>.ttl`.
 
 It cannot call collection-api directly: the access token lives in the graphql
 service's session, not in the page. So the click goes to

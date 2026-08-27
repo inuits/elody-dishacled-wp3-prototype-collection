@@ -181,7 +181,7 @@ GET /processors/<id>/shui.ttl
 
 ```
 http://collection-api.dishacled-wp3-prototype-elody.localhost:8000/
-        processors/rdf-connect--http-utils-processor-ts/shui.ttl
+        processors/rdf-connect--http-utils-processor-ts--HttpFetch/shui.ttl
 ```
 
 ➡️ Open it in the browser → the standard shape, generated live from the

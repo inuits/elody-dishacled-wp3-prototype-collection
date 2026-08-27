@@ -14,6 +14,11 @@ generator cannot reach.
 The runnable RDF-Connect `export.ttl` is **not** published: it is a build
 artefact of the generator, not an input to it (see `toolchain-export.md`).
 
+The components a definition *names* are published too, into a catalog graph of
+their own — see [component-catalog.md](component-catalog.md). That is what makes
+a definition's `prov:specializationOf <component>` resolvable without the
+catalog fragment travelling inside it.
+
 ## What lands where
 
 | | |
@@ -124,7 +129,7 @@ written on that assumption are gone.
 ## The local store
 
 `docker-compose/triplestore/fuseki-config.ttl` serves two services over one
-in-memory dataset:
+dataset:
 
 ```
 /alerts/sparql   query     the alert fixture, unchanged
@@ -135,9 +140,30 @@ in-memory dataset:
 ```
 
 `/alerts` stays read-only: that graph is written by the pipeline, not by us.
-The dataset is in memory on purpose — it is a local stand-in for the shared
-store, reseeded on every start, so published definitions do not survive a
-restart. Saving the pipeline again republishes it.
+
+**The dataset is on disk** (TDB2 in the `triplestore` volume). It used to be an
+in-memory one, reseeded on every start, which was right while the store was a
+mirror of Mongo — losing it cost nothing, because the next save republished.
+Since [pipeline-storage.md](pipeline-storage.md) the store is the only copy, so
+that same property meant **restarting the container lost every pipeline in the
+client**; the local stand-in was the one thing making the store less reliable
+than the database it replaced.
+
+The alert fixture keeps the old behaviour: `docker-compose/triplestore/
+entrypoint.sh` starts Fuseki and then PUTs `alerts.ttl` over the errors graph,
+so that graph is reseeded on every start while everything else survives. A
+whole-graph PUT is a replace, so restarting cannot accumulate copies of it, and
+an edit to `alerts.ttl` takes effect on the next start. It goes in over HTTP
+because a Jena assembler has no way to seed one named graph of a persistent
+dataset.
+
+The volume is mounted at `/fuseki`, the image's own volume, rather than at
+`/fuseki/databases`: an empty named volume on the inner path arrives root-owned
+and Fuseki (uid 100) cannot write to it — `FusekiConfigException: Not writable`.
+
+Pipelines saved before this change were in memory and are gone with the restart
+that dropped them. `scripts/publish-pipelines.py` republishes them from the
+Mongo documents the migration left in place.
 
 Fuseki restricts `/*/data` and `/*/update` to the admin user out of the box,
 which is why publishing carries credentials while reading does not. Write
@@ -155,6 +181,9 @@ PIPELINE_IMPORT_BASE       base the relative owl:imports resolve against
 PIPELINE_EXPORT_BASE_URI   root the pipeline's own IRIs are built on
 SPARQL_ENDPOINT            query endpoint, for consumers
 ```
+
+The catalog graph has a configuration block of its own, which defaults to this
+one: see [component-catalog.md](component-catalog.md).
 
 Unset `PIPELINE_GSP_ENDPOINT` or `PIPELINE_GRAPH` and nothing is published — an
 environment without a store simply does not have this behaviour.

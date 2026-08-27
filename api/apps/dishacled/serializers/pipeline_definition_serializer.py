@@ -45,16 +45,19 @@ from rdflib import BNode, Graph, Literal, Namespace, RDF, RDFS, URIRef
 from apps.dishacled.pipeline.connections import (
     PROCESSOR_RELATION,
     connections_for_pipeline,
+    instances_of,
     nest_metadata,
 )
+from apps.dishacled.serializers.component_catalog_serializer import (
+    ComponentCatalogSerializer,
+    add_identifier,
+)
 from apps.dishacled.serializers.pipeline_ttl_serializer import (
-    RUNTIME_TO_RUNNER,
     _ShapeIndex,
     _get_metadata_value,
     _slugify,
     emit_config_values,
 )
-from apps.dishacled.shacl.contracts import extract_shape_graph
 
 
 TCS = Namespace("https://w3id.org/toolchain#")
@@ -66,19 +69,6 @@ SPDX = Namespace("http://spdx.org/rdf/terms#")
 PROV = Namespace("http://www.w3.org/ns/prov#")
 PPLAN = Namespace("http://purl.org/net/p-plan#")
 SH = Namespace("http://www.w3.org/ns/shacl#")
-
-# `rdfs:description` is not an RDFS term, but it is what the reference catalog
-# uses for a component's prose description, and rdflib's RDFS namespace is
-# closed, so it is built by IRI.
-RDFS_DESCRIPTION = URIRef("http://www.w3.org/2000/01/rdf-schema#description")
-
-# Role IRIs for the shapes attached to a catalog component. `tcs:configShape`
-# is the reference catalog's; the other two come from the contract model.
-SHAPE_ROLES = {
-    "configShape": TCS.configShape,
-    "inputShape": TCS.inputShape,
-    "outputShape": TCS.outputShape,
-}
 
 HEADER = """\
 # Pipeline definition for the DiSHACLed toolchain pipeline generator
@@ -95,15 +85,6 @@ DATASET_NOTE = """\
 # a source of the plan and keeps the channel annotation, but the generator will
 # not start anything that writes to that channel.
 """
-
-
-def _root_of(graph: Graph):
-    """The subject a self-contained shape sub-graph hangs off."""
-    objects = {o for _, _, o in graph}
-    roots = [s for s in set(graph.subjects()) if s not in objects]
-    if roots:
-        return roots[0]
-    return next(iter(graph.subjects(RDF.type, SH.NodeShape)), None)
 
 
 class _Step:
@@ -133,6 +114,9 @@ class PipelineDefinitionSerializer:
         self.include_catalog = include_catalog
         self.pipeline_uri = URIRef(base_uri.rstrip("/"))
         self.pipeline_namespace = str(self.pipeline_uri).rsplit("/", 1)[0] + "/"
+        # keys of `hasProcessor` relations this serializer could not put in the
+        # document. Read it: for the store, a missing step is a deleted step.
+        self.unrepresented: list = []
 
     # -- entry point -------------------------------------------------------
 
@@ -154,6 +138,7 @@ class PipelineDefinitionSerializer:
         self._add_identifier(g, pipeline_uri, pipeline)
         self._add_label_and_comment(g, pipeline_uri, pipeline)
 
+        self.unrepresented = []
         steps, datasets = self._resolve_stages(g, pipeline, processors)
         self._emit_connections(g, pipeline, processors, steps, datasets)
 
@@ -174,12 +159,15 @@ class PipelineDefinitionSerializer:
         datasets: dict[str, URIRef] = {}
         used_slugs: set[str] = set()
 
-        for relation in pipeline.get("relations", []) or []:
-            if relation.get("type") != PROCESSOR_RELATION:
-                continue
-            key = relation.get("key")
+        for instance in instances_of(pipeline, processors):
+            relation = instance.relation
+            key = instance.key
             document = processors.get(key)
             if not document:
+                # nothing behind the relation: the component could not be
+                # fetched. Recorded, because a definition that quietly leaves a
+                # step out is written over the pipeline it belongs to.
+                self._unrepresented(key)
                 continue
             data = document.get("data") or {}
 
@@ -187,20 +175,29 @@ class PipelineDefinitionSerializer:
                 dataset_iri = data.get("componentIri")
                 if dataset_iri:
                     dataset_uri = URIRef(dataset_iri)
-                    datasets[key] = dataset_uri
+                    datasets[instance.id] = dataset_uri
                     g.add((pipeline_uri, DCT.source, dataset_uri))
                     g.add((dataset_uri, RDF.type, DCAT.Dataset))
                     self._add_identifier(g, dataset_uri, document)
                     self._add_label_and_comment(g, dataset_uri, document)
+                else:
+                    self._unrepresented(key)
                 continue
 
-            shape = _ShapeIndex.from_ttl(data.get("rawTtl") or "")
+            shape = _ShapeIndex.from_ttl(
+                data.get("rawTtl") or "", data.get("componentIri")
+            )
             if not shape:
+                # no config shape means no step: the component's own processor
+                # file is what a step is built from, and this one has none
+                self._unrepresented(key)
                 continue
             component_iri = URIRef(data.get("componentIri") or shape.target_class)
 
             name = _get_metadata_value(document, "name") or key
-            slug = self._unique_slug(_slugify(name) or "step", used_slugs)
+            # the step's own id: unique within the pipeline, and the slug its
+            # IRI ends in, which is how reading the definition back recovers it
+            slug = self._unique_slug(instance.id, used_slugs)
             step = _Step(
                 key=key,
                 uri=URIRef(f"{self.base_uri}step/{slug}"),
@@ -209,7 +206,7 @@ class PipelineDefinitionSerializer:
                 shape=shape,
                 values=nest_metadata(relation.get("metadata", [])),
             )
-            steps[key] = step
+            steps[instance.id] = step
 
             g.add((step.uri, RDF.type, TCS.InstancePipelineComponent))
             g.add((step.uri, PPLAN.isStepOfPlan, pipeline_uri))
@@ -218,6 +215,10 @@ class PipelineDefinitionSerializer:
                 g.add((step.uri, RDFS.label, Literal(name)))
 
         return steps, datasets
+
+    def _unrepresented(self, key):
+        if key and key not in self.unrepresented:
+            self.unrepresented.append(key)
 
     @staticmethod
     def _unique_slug(slug, used):
@@ -312,174 +313,29 @@ class PipelineDefinitionSerializer:
     # -- catalog fragment --------------------------------------------------
 
     def _emit_catalog(self, g, steps, datasets):
+        """Describe the components this definition names, in this document.
+
+        The description itself is `ComponentCatalogSerializer`, which is also
+        what Elody publishes into the store's catalog graph
+        (`pipeline/catalog.py`): a component described in two spellings would
+        be two things to keep in step. What is decided here is only whether the
+        description travels *with* the definition -- see `include_catalog`.
+        """
+        catalog = ComponentCatalogSerializer(g)
         runners = set()
         for step in steps.values():
-            runner = self._emit_component(g, step)
+            runner = catalog.add(
+                step.document, component_iri=step.component_iri, shape=step.shape
+            )
             if runner is not None:
                 runners.add(runner)
-
-        for runner in runners:
-            g.add((runner, RDF.type, RDFC.Runner))
-            g.add((runner, RDF.type, TCS.PipelineComponent))
-            g.add((runner, DCT.requires, RDFC.Orchestrator))
-
-    def _emit_component(self, g, step):
-        component = step.component_iri
-        if (component, RDF.type, TCS.PipelineComponent) in g:
-            # the same component used by two steps is declared once
-            return None
-
-        document = step.document
-        data = document.get("data") or {}
-
-        g.add((component, RDF.type, TCS.PipelineComponent))
-        g.add((component, RDF.type, DCAT.Resource))
-        self._add_identifier(g, component, document)
-
-        name = _get_metadata_value(document, "name")
-        if name:
-            g.add((component, RDFS.label, Literal(name)))
-        description = _get_metadata_value(document, "description")
-        if description:
-            g.add((component, RDFS_DESCRIPTION, Literal(description)))
-        url = _get_metadata_value(document, "url")
-        if url:
-            g.add((component, DCAT.landingPage, Literal(url)))
-
-        runner = RUNTIME_TO_RUNNER.get(
-            _get_metadata_value(document, "runtime"), RDFC.NodeRunner
-        )
-        g.add((component, DCT.requires, runner))
-
-        deployment = data.get("deployment") or {}
-        imports = deployment.get("imports") or self._fallback_imports(document)
-        for target in imports:
-            g.add((component, OWL.imports, URIRef(target)))
-
-        for package in deployment.get("packages") or []:
-            self._emit_package(g, component, package)
-
-        self._emit_shapes(g, component, step)
-        return runner
-
-    def _fallback_imports(self, document):
-        """Where the shapes were read from, when the catalog names nothing.
-
-        A processor discovered on GitHub carries no package coordinates, so the
-        only honest import target is the file the shapes came from. It is not
-        what a built container would use, but it resolves and it names the
-        right document.
-        """
-        owner = _get_metadata_value(document, "owner")
-        branch = _get_metadata_value(document, "defaultBranch") or "main"
-        files = _get_metadata_value(document, "shaclFiles") or ""
-        repo = (document.get("_id") or "").split("--")[-1]
-        if not owner or not repo or not files:
-            return []
-        return [
-            f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
-            for path in files.split(",")
-            if path
-        ]
-
-    def _emit_package(self, g, component, package):
-        name = package.get("name")
-        if not name:
-            return
-        node = BNode()
-        g.add((component, DCT.requires, node))
-        g.add((node, RDF.type, SPDX.Package))
-        g.add((node, SPDX.name, Literal(name)))
-        if package.get("version"):
-            g.add((node, SPDX.versionInfo, Literal(package["version"])))
-        if package.get("supplier"):
-            g.add((node, SPDX.suppliedBy, URIRef(package["supplier"])))
-
-    def _emit_shapes(self, g, component, step):
-        """Attach the component's shapes in their discovery-vocabulary roles.
-
-        The config shape is what the generator's own catalog carries; the input
-        and output shapes are what the toolchain's shape-matching test suite
-        needs, and are the same ones Elody validated the chain against.
-        """
-        data = step.document.get("data") or {}
-
-        for key, role in SHAPE_ROLES.items():
-            shape = data.get(key)
-            if shape:
-                self._attach_shape(g, component, role, shape.get("ttl"), shape.get("iri"))
-            elif key == "configShape":
-                self._attach_config_from_raw_ttl(g, component, step)
-
-    def _attach_config_from_raw_ttl(self, g, component, step):
-        """Fall back to the processor's own SHACL file for the config shape."""
-        source = Graph()
-        try:
-            source.parse(data=(step.document.get("data") or {}).get("rawTtl") or "",
-                         format="turtle")
-        except Exception:
-            return
-        node = next(
-            (
-                s
-                for s in source.subjects(RDF.type, SH.NodeShape)
-                if source.value(s, SH.targetClass) == step.shape.target_class
-            ),
-            None,
-        )
-        if node is None:
-            return
-        self._attach_shape(
-            g,
-            component,
-            TCS.configShape,
-            extract_shape_graph(source, node).serialize(format="turtle"),
-            str(node) if isinstance(node, URIRef) else None,
-        )
-
-    def _attach_shape(self, g, component, role, ttl, iri):
-        if not ttl:
-            return
-        shape_graph = Graph()
-        try:
-            shape_graph.parse(data=ttl, format="turtle")
-        except Exception:
-            return
-
-        target = URIRef(iri) if iri else _root_of(shape_graph)
-        if target is None:
-            return
-
-        # carry the shape's own prefixes over, so the merged document still
-        # reads as `demo:MeasurementsInCmShape` rather than `ns1:...`
-        for prefix, namespace in shape_graph.namespaces():
-            g.bind(prefix, namespace, replace=False)
-
-        relation = BNode()
-        g.add((component, DCAT.qualifiedRelation, relation))
-        g.add((relation, RDF.type, DCAT.Relationship))
-        g.add((relation, DCAT.hadRole, role))
-        g.add((relation, DCT.relation, target))
-        g += shape_graph
+        catalog.declare_runners(runners)
 
     # -- helpers -----------------------------------------------------------
 
     @staticmethod
     def _add_identifier(g, subject, document):
-        """The Elody document id this subject was built from.
-
-        A definition names a component by its IRI (`prov:specializationOf
-        rdfc:Validate`), which is the right thing for the toolchain but not
-        enough to read the definition back: Elody addresses the same component
-        as a document, `rdf-connect--shacl-processor-ts`, and that is the key a
-        pipeline's `hasProcessor` relation is stored under. Carrying the id
-        keeps the store a complete source of truth -- the alternative is
-        looking every component up on GitHub on every read, which loses a step
-        as soon as a repository moves.
-        """
-        identifier = (document or {}).get("_id")
-        if identifier:
-            g.add((subject, DCT.identifier, Literal(identifier)))
+        add_identifier(g, subject, document)
 
     @staticmethod
     def _add_label_and_comment(g, subject, document):

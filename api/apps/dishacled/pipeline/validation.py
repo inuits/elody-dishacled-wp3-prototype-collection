@@ -38,6 +38,7 @@ from apps.dishacled.pipeline.connections import (
     STATE_UNKNOWN,
     STATE_VALID,
     connections_for_pipeline,
+    instances_of,
 )
 
 
@@ -492,8 +493,12 @@ def _shape_payload(component, key):
 def validate_connection(connection, components: dict) -> list[Violation]:
     """The violations of one producer->consumer link."""
     return validate_shape_pair(
-        _shape_payload(components.get(connection.source), "outputShape"),
-        _shape_payload(components.get(connection.target), "inputShape"),
+        _shape_payload(
+            components.get(connection.source_key or connection.source), "outputShape"
+        ),
+        _shape_payload(
+            components.get(connection.target_key or connection.target), "inputShape"
+        ),
         source=f"{connection.source}|{connection.source_port}",
         target=f"{connection.target}|{connection.target_port}",
         source_label=connection.source_label,
@@ -619,6 +624,12 @@ def apply_validation_state(pipeline, components: dict):
             connection.state_message,
         )
 
+    # verdicts are per step, so the relation they belong to is found by step id
+    instance_by_relation = {
+        id(instance.relation): instance.id
+        for instance in instances_of(pipeline, components)
+    }
+
     relations = []
     for relation in pipeline.get("relations", []) or []:
         metadata = [dict(item) for item in relation.get("metadata", []) or []]
@@ -630,7 +641,8 @@ def apply_validation_state(pipeline, components: dict):
             and key.rsplit(".", 1)[-1] in (STATE_FIELD, STATE_MESSAGE_FIELD)
         }
         metadata = [m for m in metadata if str(m.get("key") or "") not in stale]
-        for port, (state, message) in verdicts.get(relation.get("key"), {}).items():
+        instance = instance_by_relation.get(id(relation), relation.get("key"))
+        for port, (state, message) in verdicts.get(instance, {}).items():
             state_key, message_key = _state_keys(port)
             metadata.append({"key": state_key, "value": state})
             metadata.append({"key": message_key, "value": message})

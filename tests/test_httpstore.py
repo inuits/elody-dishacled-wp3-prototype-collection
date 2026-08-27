@@ -158,14 +158,18 @@ class TestGetItemsByIdentifiers:
 
     def test_get_item_by_id_is_resilient_to_connection_errors(self):
         # An unreachable GitHub (e.g. offline / DNS failure) must not crash the
-        # whole request; a single item simply resolves to nothing.
+        # whole request. It used to resolve to nothing, which emptied the
+        # processor list of every pipeline until the next refresh, so the item
+        # now falls back to what its id says -- see test_component_resilience.
         store = DishacledHttpStorageManager()
         store.session = MagicMock()
         store.session.get.side_effect = requests.exceptions.ConnectionError(
             "Failed to resolve 'api.github.com'"
         )
 
-        assert store.get_item_from_collection_by_id("githubProcessors", "rdfc--x") == {}
+        item = store.get_item_from_collection_by_id("githubProcessors", "rdfc--x")
+        assert item["_id"] == "rdfc--x"
+        assert item["data"] == {"unresolved": True}
 
 
 class TestGetItemIncludesRawTtl:

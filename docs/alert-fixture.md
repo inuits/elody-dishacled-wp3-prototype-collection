@@ -110,8 +110,8 @@ they carry no `spdx:Package`, so the coordinates read off each repository's own
 `package.json` keep winning. Verified live:
 
 ```
-rdf-connect--threshhold-monitor-processor   writer       out  -> ErrorShape
-rdf-connect--sparql-ingest-processor-ts     memberStream in   -> ErrorShape
+rdf-connect--threshhold-monitor-processor--ThresholdMonitor  writer        out  -> ErrorShape
+rdf-connect--sparql-ingest-processor-ts--SPARQLIngest        memberStream  in   -> ErrorShape
 ```
 
 so `threshold-monitor → sparql-ingest` validates as a chain, while feeding

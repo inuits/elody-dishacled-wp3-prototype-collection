@@ -240,13 +240,23 @@ def output_ports(ports) -> list[Port]:
 
 @dataclass(frozen=True)
 class Connection:
-    """A directed link from a producer port to a consumer port."""
+    """A directed link from one step's producer port to another's consumer port.
+
+    `source` and `target` are *step* ids: which two steps are wired. The
+    component behind each is carried alongside, because what a link may carry
+    is a property of the component (its input and output shapes), not of the
+    step -- two steps of one component are checked against the same shapes.
+    """
 
     source: str
     source_port: str
     target: str
     target_port: str
     channel: str
+    # the components behind the two steps; default to the step ids so a
+    # Connection built by hand still resolves
+    source_key: str = ""
+    target_key: str = ""
     source_role: str = "output"
     target_role: str = "input"
     source_shape: str | None = None
@@ -271,6 +281,8 @@ class Connection:
         return {
             "id": self.id,
             "source": self.source,
+            "sourceKey": self.source_key or self.source,
+            "targetKey": self.target_key or self.target,
             "sourcePort": self.source_port,
             "sourceRole": self.source_role,
             "sourceShape": self.source_shape,
@@ -311,18 +323,139 @@ def connection_metadata(
     return metadata
 
 
+def channel_name_between(
+    source: str, source_port: str, target: str, target_port: str
+) -> str:
+    """The channel a connection gets when the user did not name one.
+
+    Built from the two *step* ids, not the two component names: a component
+    used twice feeds two different steps, and naming both channels after the
+    component would collapse them back into one.
+    """
+    return "-".join(
+        [slugify(source), slugify(source_port), "to", slugify(target), slugify(target_port)]
+    )
+
+
 def default_channel_name(
     source_document, source_port: str, target_document, target_port: str
 ) -> str:
-    return "-".join(
-        [
-            slugify(component_name(source_document)),
-            slugify(source_port),
-            "to",
-            slugify(component_name(target_document)),
-            slugify(target_port),
-        ]
+    """The same, addressed by document -- what a single-instance pipeline gets."""
+    return channel_name_between(
+        component_name(source_document),
+        source_port,
+        component_name(target_document),
+        target_port,
     )
+
+
+# A step's own identity within its pipeline. It is the slug the step's IRI ends
+# in, so a pipeline read back out of the store carries it without the definition
+# needing a new triple for it.
+#
+# It lives in the *relation key*, because that is what the framework addresses a
+# related entity by: the processor list fetches one row per key, and a config
+# modal writes back to the relation whose key matches the row it was opened on
+# (`useFormHelper.parseRelationMetadataForFormSubmit`). A step the UI can show
+# and configure on its own therefore has to be a key of its own.
+#
+#     rdf-connect--log-processor-ts--LogProcessorJs~logprocessorjs-2
+#
+# `~` because these ids travel in URL paths (`/processors/<id>/shui.ttl`) and in
+# filter values, and it is unreserved in both. It is also kept as relation
+# metadata, which is what an id typed by hand or set before a save looks like.
+INSTANCE_FIELD = "instance"
+INSTANCE_SEPARATOR = "~"
+
+
+def split_component_key(key) -> tuple[str, str | None]:
+    """`component~step` -> (component, step); a bare key names no step."""
+    text = str(key or "")
+    component, separator, instance = text.partition(INSTANCE_SEPARATOR)
+    if not separator or not instance:
+        return text, None
+    return component, instance
+
+
+@dataclass(frozen=True)
+class Instance:
+    """One step: a component, used once, with its own configuration.
+
+    A pipeline is instances of components rather than components -- the
+    tutorial's runs two `rdfc:LogProcessorJs`, and the toolchain's own
+    reference definition has two `LogProcessorJs` steps and two `Sdsify` steps.
+    `tcs:InstancePipelineComponent` is a `p-plan:Step`, and steps are the many
+    side of `prov:specializationOf`, so this is the modelling the vocabulary
+    already assumes.
+    """
+
+    id: str
+    key: str  # the relation key: the component, or `component~step`
+    label: str
+    relation: dict
+
+    @property
+    def component_id(self) -> str:
+        """The component this step is one of."""
+        return split_component_key(self.key)[0]
+
+    @property
+    def metadata(self) -> list:
+        return self.relation.get("metadata", []) or []
+
+
+def instance_id_of(relation) -> str | None:
+    """The identity a relation already carries, if any."""
+    for item in relation.get("metadata", []) or []:
+        if item.get("key") == INSTANCE_FIELD and item.get("value"):
+            return str(item["value"])
+    return None
+
+
+def instances_of(pipeline, components: dict | None = None) -> list[Instance]:
+    """Every step of a pipeline, in relation order, each with an id of its own.
+
+    The id is the relation's stored `instance` when it has one -- which is how
+    a saved connection keeps pointing at the same step -- and otherwise the
+    component's name, made unique within the pipeline. So a pipeline with one
+    logger still calls it `logprocessorjs`, and a second one is
+    `logprocessorjs-2` rather than the same step twice.
+    """
+    components = components or {}
+    instances: list[Instance] = []
+    taken: set[str] = set()
+
+    for relation in (pipeline or {}).get("relations", []) or []:
+        if relation.get("type") != PROCESSOR_RELATION:
+            continue
+        key = relation.get("key")
+        if not key:
+            continue
+
+        document = components.get(key) or {}
+        component_id, from_key = split_component_key(key)
+        label = component_name(document) if document else component_id
+        # the key is the authority: it is what the UI addressed this step by
+        stored = from_key or instance_id_of(relation)
+        instance = stored or _unique(slugify(label) or slugify(component_id), taken)
+        if stored:
+            taken.add(stored)
+        instances.append(
+            Instance(id=instance, key=key, label=label, relation=relation)
+        )
+    return instances
+
+
+def _unique(candidate: str, taken: set) -> str:
+    if candidate not in taken:
+        taken.add(candidate)
+        return candidate
+    index = 2
+    while f"{candidate}-{index}" in taken:
+        index += 1
+    unique = f"{candidate}-{index}"
+    taken.add(unique)
+    return unique
 
 
 def processor_keys(pipeline) -> list[str]:
@@ -350,38 +483,63 @@ def _connection_settings(relation) -> dict:
     return normalised
 
 
+def resolve_instance(reference: str, instances) -> "Instance | None":
+    """The step a stored producer reference names.
+
+    An `instance|port` reference names the step outright. A `component|port`
+    one is what pipelines saved before steps had identity carry, and it names
+    the component's first step -- unambiguous when the component is used once,
+    which is the only case that could have been saved back then.
+    """
+    if not reference:
+        return None
+    by_id = {instance.id: instance for instance in instances}
+    if reference in by_id:
+        return by_id[reference]
+    return next(
+        (instance for instance in instances if instance.key == reference), None
+    )
+
+
 def connections_for_pipeline(pipeline, components: dict) -> list[Connection]:
     """Every connection declared on a pipeline, as directed links.
 
     `components` maps component id -> component document (the `githubProcessor`
-    documents the pipeline's hasProcessor relations point at). Anything that
-    cannot be resolved into a real producer port is dropped rather than
-    surfaced as a half-connection.
+    documents the pipeline's hasProcessor relations point at). Connections are
+    between *steps*: a component used twice has two of them, each with its own
+    wiring. Anything that cannot be resolved into a real producer port is
+    dropped rather than surfaced as a half-connection.
     """
-    available = set(processor_keys(pipeline))
+    instances = instances_of(pipeline, components)
     ports_by_component = {
-        key: ports_for_component(components.get(key) or {}) for key in available
+        instance.key: ports_for_component(components.get(instance.key) or {})
+        for instance in instances
     }
 
     connections: list[Connection] = []
-    for relation in (pipeline or {}).get("relations", []) or []:
-        if relation.get("type") != PROCESSOR_RELATION:
-            continue
-        target = relation.get("key")
-        if not target:
-            continue
-        target_ports = {p.name: p for p in input_ports(ports_by_component.get(target, []))}
+    for instance in instances:
+        target = instance.id
+        target_key = instance.key
+        target_ports = {
+            p.name: p for p in input_ports(ports_by_component.get(target_key, []))
+        }
 
-        for port_name, settings in sorted(_connection_settings(relation).items()):
-            source, source_port_name = parse_port_reference(
+        for port_name, settings in sorted(
+            _connection_settings(instance.relation).items()
+        ):
+            reference, source_port_name = parse_port_reference(
                 settings.get(SOURCE_FIELD)
             )
-            if not source or source == target or source not in available:
+            source_instance = resolve_instance(reference, instances)
+            if source_instance is None or source_instance.id == target:
                 continue
+            source = source_instance.id
             source_port = next(
                 (
                     p
-                    for p in output_ports(ports_by_component.get(source, []))
+                    for p in output_ports(
+                        ports_by_component.get(source_instance.key, [])
+                    )
                     if p.name == source_port_name
                 ),
                 None,
@@ -393,17 +551,19 @@ def connections_for_pipeline(pipeline, components: dict) -> list[Connection]:
                 # the component has ports but not this one -- stale metadata
                 continue
 
-            source_document = components.get(source) or {}
-            target_document = components.get(target) or {}
+            source_document = components.get(source_instance.key) or {}
+            target_document = components.get(target_key) or {}
             connections.append(
                 Connection(
                     source=source,
                     source_port=source_port.name,
                     target=target,
                     target_port=port_name,
+                    source_key=source_instance.key,
+                    target_key=target_key,
                     channel=settings.get(CHANNEL_FIELD)
-                    or default_channel_name(
-                        source_document, source_port.name, target_document, port_name
+                    or channel_name_between(
+                        source, source_port.name, target, port_name
                     ),
                     source_shape=source_port.shape_iri,
                     target_shape=target_port.shape_iri if target_port else None,

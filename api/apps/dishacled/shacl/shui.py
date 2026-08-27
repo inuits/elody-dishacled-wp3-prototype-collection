@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from rdflib import Graph, Namespace, RDF, BNode, Literal, URIRef
 from rdflib.collection import Collection
 
+from apps.dishacled.shacl.graphs import parsed_graph
+
 
 SH = Namespace("http://www.w3.org/ns/shacl#")
 XSD = Namespace("http://www.w3.org/2001/XMLSchema#")
@@ -99,9 +101,21 @@ def _select_editor(datatype_ln, class_ln, in_values, is_nested_shape) -> str:
 
 
 class ShuiFormBuilder:
-    def __init__(self, ttl_string: str):
-        self._g = Graph()
-        self._g.parse(data=ttl_string, format="turtle")
+    def __init__(self, ttl_string: str, target_class=None):
+        """`target_class`: the processor class to build the form for.
+
+        A processor file may declare several processors, and then the file alone
+        cannot say which one a form is for. The component knows
+        (`data.componentIri`), so it says. Without it the choice falls back to
+        the first declared class in IRI order -- stable, and the same order the
+        export uses, so the form and the exported shape cannot disagree.
+        """
+        self._target_class = str(target_class) if target_class else None
+        # shared, read-only: a repository declaring eight processors asks for
+        # eight forms out of one file (see shacl/graphs.py)
+        self._g = parsed_graph(ttl_string)
+        if self._g is None:
+            raise ValueError("not turtle")
         # map targetClass local name -> node shape subject
         self._shapes_by_class: dict[str, object] = {}
         # ...and the full IRI of that class, so the emitted shape can name it
@@ -116,14 +130,31 @@ class ShuiFormBuilder:
     # -- tree -------------------------------------------------------------
 
     def _main_class(self) -> str | None:
-        """Local name of the shape whose targetClass implements rdfc:Processor."""
-        for s, p, o in self._g:
-            if o == RDFC.Processor and str(p).split("#")[-1].endswith(
-                "ImplementationOf"
-            ):
-                return _local_name(s)
-        # fallback: first shape with a targetClass
-        return next(iter(self._shapes_by_class), None)
+        """Local name of the shape this form is for.
+
+        The class the caller named, when its shape is here; otherwise the first
+        class declaring `rdfc:*ImplementationOf rdfc:Processor`, in IRI order.
+        """
+        if self._target_class is not None:
+            local = _local_name(self._target_class)
+            if local in self._shapes_by_class:
+                return local
+
+        declared = sorted(
+            (
+                str(s)
+                for s, p, o in self._g
+                if o == RDFC.Processor
+                and str(p).split("#")[-1].endswith("ImplementationOf")
+            )
+        )
+        for iri in declared:
+            if _local_name(iri) in self._shapes_by_class:
+                return _local_name(iri)
+        if declared:
+            return _local_name(declared[0])
+        # fallback: the first shape with a targetClass, in IRI order
+        return next(iter(sorted(self._shapes_by_class)), None)
 
     def build_tree(self) -> UiNode:
         main = self._main_class()

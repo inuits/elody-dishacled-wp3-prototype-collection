@@ -42,7 +42,7 @@ repository moves.
 
 A definition names a component by IRI (`prov:specializationOf rdfc:Validate`),
 which is right for the toolchain but not enough to read back: Elody addresses
-the same component as a *document*, `rdf-connect--shacl-processor-ts`, and that
+the same component as a *document*, `rdf-connect--shacl-processor-ts--Validate`, and that
 is the key its `hasProcessor` relation is stored under. So the export now emits
 `dct:identifier` on the pipeline, on each component in the catalog fragment, and
 on each dataset.
@@ -57,6 +57,13 @@ flagged for Thomas in [toolchain-open-questions.md](toolchain-open-questions.md)
 drops the fragment, and with it the identifiers. Publication always ships the
 fragment; the download parameter is for hand-off, not for storage. There is a
 test that states exactly this.
+
+This is also what still keeps the fragment alive now that the components are
+published into a catalog graph of their own
+([component-catalog.md](component-catalog.md)): the store describes them twice,
+identically, until the reverse mapping resolves a component from the catalog
+graph instead of from the document it was handed. That is the remaining step
+before the export can name components and nothing more.
 
 ### What deliberately does not round-trip
 
@@ -77,6 +84,177 @@ test that states exactly this.
   back as `"10000"`, not `10000` — the shape types it on the way out and will
   type it again. Booleans are the exception: a checkbox is stored as a boolean,
   and `"true"` would not render as a ticked box.
+
+## Nested config, and why the fragment carries nested shapes
+
+`rdfc:SPARQLIngest` keeps its settings in `rdfc:ingestConfig`, `rdfc:RmlMapper`
+its input in `rdfc:source` and its output in `rdfc:defaultTarget`. Those blocks
+travel as `sources.reader`, `config.graphStoreUrl` and so on -- the dotted keys
+the config form writes -- and the shape is what turns one into the other in
+both directions.
+
+The reverse mapping reads the shape out of the definition's own catalog
+fragment, so the fragment has to contain the *nested* shapes too. It did not: a
+property says `sh:class rdfc:IngestConfig`, and the shape for that class is an
+anonymous `sh:NodeShape` with `sh:targetClass`, which `extract_shape_graph`
+never followed because it only walked into a class that was itself typed
+`sh:NodeShape`. Nothing looked broken at write time; the loss appeared one read
+later:
+
+```
+config = nd8554671c9824c2ca3285683c0ca3f43b3     <- a blank node id, not a value
+```
+
+and since a save re-serializes what it read, and `emit_config_values` skips a
+value that is not a dict, the whole block was dropped at the next unrelated
+edit. Set it, save something else, gone.
+
+Two changes, both in the writing half:
+
+* `extract_shape_graph` follows `sh:class` / `sh:node` to the shape that
+  *targets* that class, so a config shape arrives with everything it nests into.
+* `root_of` no longer guesses which shape a sub-graph is "about" -- the caller
+  states the target class. With nested shapes travelling along there are now
+  several subjects nothing points at, and picking the wrong one attaches
+  `IngestConfig`'s shape to the component as if it were its own, which reads
+  exactly like the values were never saved.
+
+A pipeline stored before this fix keeps its shorter fragment until its next
+save; the fragment is rebuilt from the components each time, so one save is the
+whole migration.
+
+## A step is an instance, not a component
+
+The tutorial's pipeline runs two `rdfc:LogProcessorJs`: one on the report
+channel at `warn`, one on the output channel at `info`. Elody keyed every step
+by the component's document id, so the two collapsed into one stage carrying
+both configurations:
+
+```turtle
+<logprocessorjs> a rdfc:LogProcessorJs ;
+    rdfc:label "output", "report" ;
+    rdfc:level "info", "warn" .
+```
+
+which violates the processor's own shape (`sh:maxCount 1` on each) and is the
+failure the toolchain's application-profile shapes name outright: "two configs
+on the same step silently merge their predicates (e.g. duplicate `rdfc:level`
+values)". The vocabularies always allowed it --
+`tcs:InstancePipelineComponent rdfs:subClassOf p-plan:Step`, steps are the many
+side of `prov:specializationOf`, and the toolchain's own reference definition
+has two `LogProcessorJs` steps and two `Sdsify` steps. Elody's keying was the
+odd one out.
+
+So each `hasProcessor` relation is a step with an id of its own
+(`connections.py`, `Instance`):
+
+* **The id is the step slug** -- the component's name made unique within the
+  pipeline (`logprocessorjs`, `logprocessorjs-2`), or whatever the relation
+  already carries in its `instance` metadata.
+* **It needs no new term in the definition.** The export already writes
+  `.../step/<slug>`, so reading a definition back recovers the id from the IRI
+  and puts it on the relation. A pipeline stored before this change comes back
+  with ids derived the same way.
+* **Connections are between steps.** A producer reference is
+  `<step>|<port>`; the older `<component>|<port>` still resolves, to that
+  component's first step -- which is unambiguous, because it could only have
+  been saved while the component was used once.
+* **Channels are named after the two steps**, so two steps of one component
+  feed two channels rather than one twice. For a component used once the name
+  is unchanged, since the step id is the component's name.
+* **Shapes stay per component.** A `Connection` carries `source_key` /
+  `target_key` alongside the step ids, because what a link may carry is a
+  property of the component. Nothing about the SHACL changes: one shape per
+  class, targeting every instance of it.
+
+### The step is the relation key
+
+Everything the framework does with a related entity is keyed by
+`relation.key`: the processor list fetches one row per key, and a config modal
+writes back to the relation whose key matches the row it was opened on
+(`useFormHelper.parseRelationMetadataForFormSubmit`: `if (relation.key === id)`).
+So a step the UI can show and configure on its own has to *be* a key of its
+own:
+
+    rdf-connect--log-processor-ts--LogProcessorJs~logprocessorjs-2
+
+`~` because these ids travel in URL paths (`/processors/<id>/shui.ttl`) and in
+filter values, and it is unreserved in both. The store resolves such a key to
+the component it names and serves it as that step -- same shape, same form,
+same ports, its own identity and a name that says which step it is. No
+framework change: the relation-config machinery already addresses relations,
+it just needed the identity to be in the key.
+
+Two rules keep it quiet:
+
+* **Only a repeated component is qualified.** One step is unambiguous as its
+  component, so every existing pipeline keeps exactly the keys it had.
+* **The fragment identifies the component, not the step.** A step's document
+  has `component~step` as its `_id`, and writing that as the component's
+  `dct:identifier` made the next read append the step again -- the key grew a
+  segment per save (`LogProcessorJs~logprocessorjs~logprocessorjs~…`).
+  `add_identifier` therefore prefers `data.componentId`. Asserted over three
+  generations, because one round trip does not catch it.
+
+### Adding the second one
+
+Relations are patched by key: `PATCH /entities/<id>/relations` replaces every
+existing relation whose key is in the payload (collection-api
+`storage/sparqlstore.py`, and the database engine has the same rule), and
+baseGraphql sends only the New and Changed ones. So adding a second step with
+the component's own key does not add anything -- it *replaces* the first,
+configuration and all, before any of this code is reached.
+
+The second one therefore arrives already keyed: `useFormHelper.addRelations`
+mints `component~name-2` when the picker's operation says duplicates are
+allowed (`allowDuplicateRelations`, off everywhere else) and the entity is
+already related. The suffix matches what the read-back would have named that
+step anyway, so the key it settles on is the one the UI used.
+
+    before   LogProcessorJs                       label report, level warn
+    add      LogProcessorJs~logprocessorjs-2      (a different key: nothing is replaced)
+    reload   LogProcessorJs~logprocessorjs        label report, level warn
+             LogProcessorJs~logprocessorjs-2
+
+A stored producer reference stays the *step id* (`logprocessorjs-2|writer`)
+rather than the relation key: the id is the same before and after a pipeline's
+keys are qualified, so a connection saved either side of the change keeps
+pointing at the same step.
+
+## A save never shortens a pipeline
+
+The store holds the only copy and a save is a whole-graph PUT, so a definition
+that cannot represent one of the pipeline's processors does not describe a
+smaller pipeline -- it deletes that processor. `_resolve_stages` used to skip
+such a step silently (`if not shape: continue`), which is how a pipeline lost a
+step it had a moment earlier, with nothing logged and nothing shown.
+
+Both serializers now record what they could not represent
+(`serializer.unrepresented`), and:
+
+* `definition_for_store` raises `IncompletePipeline` rather than returning a
+  document. **Returning `""` would not do**: the framework's SPARQL store reads
+  an empty answer as "withdraw this pipeline" and deletes the graph
+  (collection-api `storage/sparqlstore.py`), which is the same loss one step
+  larger.
+* `publish_pipeline` catches it, logs, and touches nothing -- neither PUT nor
+  DELETE. What is in the store stays.
+* The entity routes answer **409** with the ids it could not describe, so the
+  UI reports a save that did not happen instead of showing a 500 or, worse, a
+  silent success.
+* Both download routes set `X-Pipeline-Unrepresented`, because a pipeline.ttl
+  that is quietly missing a stage is one somebody deploys and then debugs.
+
+The usual cause is transient -- GitHub rate limited (see
+[component-identity.md](component-identity.md)), offline, or a repository
+renamed -- so the next save writes the pipeline whole. This is a safety net, not
+a cure: making a save independent of GitHub means resolving components from the
+catalog graph the store already holds, which is the open item in
+[toolchain-open-questions.md](toolchain-open-questions.md) §4.
+
+An **invalid chain is different and still withdraws**: that is a decision about
+the pipeline (its shapes do not line up), not a failure to read it, and it is
+what the 409 on both exports mirrors.
 
 ## The engine grew a write side
 
@@ -271,13 +449,27 @@ wants this.
   multi-tenant SPARQL is out of scope.
 * **No history and no optimistic concurrency.** Two editors saving the same
   pipeline: the last one wins, silently.
+* **A component that cannot be fetched is dropped from the definition.**
+  `load_pipeline_components` leaves out what the http store cannot resolve so
+  that one unreachable repository degrades a report rather than denying it —
+  but on the *write* path that reads as "this pipeline has no steps", and the
+  definition published over the good one is a bare plan node. GitHub's
+  unauthenticated limit is 60 requests an hour, which is reachable in normal
+  use, so this is not hypothetical: it was seen while republishing after a
+  restart, and the same save a minute later produced the full definition.
+  Configure `GITHUB_TOKEN`; a real fix is for the write path to refuse a
+  definition with fewer steps than the entity has `hasProcessor` relations.
 * **Two assumptions are baked into the engine rather than configured.** RDF is
   read and written as turtle (both directions; the read side already was), and a
   document's graph is `<graph>/<id>`. Each is one config key away from being
   general — `content_type` and a graph template — and neither has a second
   consumer yet, so they are stated here instead of guessed at.
 * **A pipeline whose chain does not validate is not in the store at all**, so
-  Elody cannot list or open it either. That is the same rule the exports have
+  Elody cannot list or open it either — and since the builder is where the
+  chain gets fixed, a pipeline forced into the store with
+  `PIPELINE_PUBLISH_INVALID=true` is withdrawn again by the first save made
+  with the flag off. Fixing a broken chain in the builder means leaving it on
+  for the duration. That is the same rule the exports have
   always applied, but it now means the pipeline is invisible rather than merely
   unexportable. `PIPELINE_PUBLISH_INVALID=true` is the escape hatch, and the
   builder is where the chain gets fixed.

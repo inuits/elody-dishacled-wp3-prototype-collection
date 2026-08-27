@@ -137,7 +137,7 @@ GET /processors/<id>/shui.ttl            # generated shui: shape (Turtle)
 GET /processors/<id>/shui.ttl?download=1 # same, as a file download
 
 # e.g. http-utils (local):
-http://collection-api.dishacled-wp3-prototype-elody.localhost:8000/processors/rdf-connect--http-utils-processor-ts/shui.ttl
+http://collection-api.dishacled-wp3-prototype-elody.localhost:8000/processors/rdf-connect--http-utils-processor-ts--HttpFetch/shui.ttl
 ```
 
 A captured example (generated from the live processor) is checked in at
