@@ -564,6 +564,12 @@ rdfc:SPARQLIngest a tcs:PipelineComponent, dcat:DataService ;
     a dcat:Relationship ;
     dcat:hadRole tcs:inputShape ;
     dcterms:relation lblodsh:ErrorShape ;
+  ] , [
+    # local demo addition: the ingest passes the alerts through to the store
+    # unchanged, so consumers of the store (dashboard, error alert) chain on.
+    a dcat:Relationship ;
+    dcat:hadRole tcs:outputShape ;
+    dcterms:relation lblodsh:ErrorShape ;
   ] .
 
 
@@ -616,3 +622,566 @@ rdfc:RmlMapper a tcs:PipelineComponent, dcat:DataService ;
   rdfs:comment "Maps source data to RDF with an RML mapping." ;
   dcat:landingPage <https://github.com/rdf-connect/rml-processor-jvm> ;
   owl:imports <./build/plugins/rml-processor-jvm-master-SNAPSHOT-all.jar> .
+
+# ===== BEGIN local demo copy: DiSHACLed/demonstrator@proposal catalogs (Koen) =====
+# Source: https://github.com/DiSHACLed/demonstrator/tree/proposal (catalogs/)
+# Local fixes: missing prefixes (loket/rdfs/dash/shacl-play), iana media-type IRIs,
+# and dcat:landingPage -> rdfs:seeAlso so these serve as local picker components
+# (landingPage marks a GitHub-overlay in contracts.py and would hide them).
+
+# ----- from data.ttl -----
+@prefix dash: <http://datashapes.org/dash#> .
+@prefix shacl-play: <https://shacl-play.sparna.fr/ontology#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix dcat:    <http://www.w3.org/ns/dcat#> .
+@prefix dct:     <http://purl.org/dc/terms/> .
+@prefix iana:    <https://www.iana.org/assignments/media-types/> .
+@prefix ex:      <https://example.org/> .
+@prefix graphs:  <https://example.org/shapes-graphs/> .
+@prefix rdf:     <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix xsd:     <http://www.w3.org/2001/XMLSchema#> .
+@prefix shape:   <http://www.example.org/shapes/> .
+@prefix sh:      <http://www.w3.org/ns/shacl#> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix schema:  <http://schema.org/> .
+@prefix sosa:    <http://www.w3.org/ns/sosa/> .
+@prefix geo:     <http://www.w3.org/2003/01/geo/wgs84_pos#> .
+@prefix qudt:    <http://qudt.org/schema/qudt/> .
+@prefix unit:    <http://qudt.org/vocab/unit/> .
+
+ex:water-measurements
+    a dcat:Dataset ;
+    dct:title "Water Measurements"@en ;
+    dcat:distribution ex:water-measurements-api, ex:water-measurements-sample .
+
+ex:water-measurements-api
+    a dcat:Distribution ;
+    dct:title "Water Measurements Distribution (ld-json api)"@en ;
+    dct:format "application/ld+json" ;  
+    dcat:endpointURL "https://dishacled-api.azurewebsites.net/api/v1/source-a/current" .
+
+ex:water-measurements-sample
+    # dcat:Dataset added locally: ports_for_component only synthesises the
+    # output port for datasets, and the picker serves this sample as source.
+    a dcat:Distribution, dcat:Dataset ;
+    dct:title "Water Measurements Sample [2026, 24th of August, 12:00 / 15 min]"@en ;
+    dcat:mediaType <https://www.iana.org/assignments/media-types/text/turtle> ;
+    dcat:downloadURL <https://dishacled-api.azurewebsites.net/api/v1/source-a/sample-a-20260824-15m.ttl> ;
+    dcterms:conformsTo shape:Observation, shape:QuantityValue ;
+    rdfs:label "Water measurements API (sample)" ;
+    # Local demo tweak: same output shape as Sensor feed (cm), so this dataset
+    # can be the chain's source and validate against HTTP poller (cm)'s input.
+    dcat:qualifiedRelation [
+        a dcat:Relationship ;
+        dcat:hadRole tcs:outputShape ;
+        dct:relation <https://dishacled.github.io/demo#MeasurementsInCmShape>
+    ] .
+
+# ! below auto-generated shapes from SHACL-play
+
+shape:QuantityValue_unit
+        sh:hasValue  unit:MilliM ;
+        sh:maxCount  1 ;
+        sh:minCount  1 ;
+        sh:name      "unit"@en ;
+        sh:nodeKind  sh:IRI ;
+        sh:path      qudt:unit .
+
+shape:Observation_hasResult
+        sh:class     qudt:QuantityValue ;
+        sh:maxCount  1 ;
+        sh:minCount  1 ;
+        sh:name      "hasResult"@en ;
+        sh:nodeKind  sh:IRI ;
+        sh:path      sosa:hasResult .
+
+shape:Observation_madeBySensor
+        sh:hasValue  ex:sensor1 ;
+        sh:maxCount  1 ;
+        sh:minCount  1 ;
+        sh:name      "madeBySensor"@en ;
+        sh:nodeKind  sh:IRI ;
+        sh:path      sosa:madeBySensor .
+
+shape:QuantityValue  rdf:type        sh:NodeShape ;
+        rdfs:label                   "QuantityValue"@en ;
+        sh:property                  shape:QuantityValue_unit , shape:QuantityValue_numericValue ;
+        sh:targetClass               qudt:QuantityValue ;
+        shacl-play:background-color  "orange" .
+
+shape:QuantityValue_numericValue
+        dash:propertyRole  dash:LabelRole ;
+        sh:datatype        xsd:decimal ;
+        sh:maxCount        1 ;
+        sh:minCount        1 ;
+        sh:name            "numericValue"@en ;
+        sh:nodeKind        sh:Literal ;
+        sh:path            qudt:numericValue .
+
+shape:Observation  rdf:type          sh:NodeShape ;
+        rdfs:label                   "Observation"@en ;
+        sh:property                  shape:Observation_hasResult , shape:Observation_resultTime , shape:Observation_madeBySensor ;
+        sh:targetClass               sosa:Observation ;
+        shacl-play:background-color  "deeppink" .
+
+shape:Observation_resultTime
+        dash:propertyRole  dash:LabelRole ;
+        sh:datatype        xsd:dateTime ;
+        sh:maxCount        1 ;
+        sh:minCount        1 ;
+        sh:name            "resultTime"@en ;
+        sh:nodeKind        sh:Literal ;
+        sh:path            sosa:resultTime .
+
+# ----- from sw.ttl -----
+@prefix : <http://example.org/example/> .
+@prefix dcat: <http://www.w3.org/ns/dcat#> .
+@prefix dct: <http://purl.org/dc/terms/> .
+@prefix mu: <http://mu.semte.ch/vocabularies/core/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix sw: <https://semantic.works/services/> .
+@prefix tcs: <https://w3id.org/toolchain#> .
+
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix oslc: <http://open-services.net/ns/core#> .
+@prefix nmo:  <http://www.semanticdesktop.org/ontologies/2007/03/22/nmo#> .
+@prefix loket: <http://lblod.data.gift/shapes/loket-error-alert-service/> .
+
+# ! We can use a generic config service for semantic works services (enough for what we are using here), providing the following support;
+# 1. delta rule
+# 2. docker variable
+# 3. any file (path + contents)
+# such configs can be easily handled by pipeline generator
+
+# ! Afterwards, we can specify 
+# 1.`tcs:wrappedConfigShape`'s for each service; these specify only the minimal spec required from user
+# 2.`tcs:unwrapConfig` for each service
+
+sw:genericSWConfigShape a sh:NodeShape.
+# ....
+
+sw:loket-error-alert-service a tcs:PipelineComponent, mu:Microservice, dcat:Resource ;
+  rdfs:label "Error alert service" ;
+  # local demo additions: accept the demo ErrorShape IRI alongside loket's own,
+  # and declare one reader port so the service ranks/connects in the builder
+  # (delivery is implicit through the central store at run time).
+  dcat:qualifiedRelation [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:inputShape ;
+    dct:relation <http://lblod.data.gift/shapes/ErrorShape>
+  ] , [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:configShape ;
+    dct:relation [
+      a sh:NodeShape ;
+      sh:property [
+        sh:path <https://w3id.org/rdf-connect#alerts> ;
+        sh:name "alerts" ;
+        sh:class <https://w3id.org/rdf-connect#Reader> ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+      ] , [
+        sh:path <https://w3id.org/rdf-connect#emails> ;
+        sh:name "emails" ;
+        sh:class <https://w3id.org/rdf-connect#Writer> ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+      ]
+    ]
+  ] ;
+  rdfs:description "Service that is responsible for sending out alerts when errors are inserted in the store. Build using the MU Javascript template.";
+  rdfs:seeAlso <https://github.com/lblod/loket-error-alert-service> ;
+  dct:requires sw:triple-store ,
+               sw:mu-delta-notifier ,
+               sw:mu-identifier ;
+  dcat:qualifiedRelation [
+        dcat:hadRole tcs:inputShape ;
+        dct:relation loket:ErrorShape
+    ] ,
+    [
+        dcat:hadRole tcs:outputShape ;
+        dct:relation loket:EmailShape
+    ] ,
+        [
+        a dcat:Relationship;
+        dcat:hadRole tcs:configShape ;
+        dct:relation sw:genericSWConfigShape 
+        ],
+        [
+        a dcat:Relationship;
+        dcat:hadRole tcs:wrappedConfigShape ;
+        dct:relation [
+            a sh:NodeShape;
+            # ...
+            # the variables from here https://github.com/lblod/loket-error-alert-service#environment-variables
+            # variable for string of template
+            # with additional constraints that we can express
+        ]
+    ] ; 
+    tcs:unwrapConfig "CONSTRUCT ...." # the delta rule is just a constant https://github.com/lblod/loket-error-alert-service#in-a-musemtech-stack, 
+    # turning the template string into a file... (we can insert request triples to write a file as a hint for the pipeline generator to actually write the file with its contents)
+    # the other variables from above translated trivially to docker variables
+    .
+
+sw:deliver-email-service a tcs:PipelineComponent, mu:Microservice, dcat:Resource ;
+  rdfs:label "Deliver e-mail" ;
+  # local demo additions: consume the EmailShape the error-alert service
+  # produces (upstream says "MailShape, to verify") + one reader port.
+  dcat:qualifiedRelation [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:inputShape ;
+    dct:relation loket:EmailShape
+  ] , [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:configShape ;
+    dct:relation [
+      a sh:NodeShape ;
+      sh:property [
+        sh:path <https://w3id.org/rdf-connect#emails> ;
+        sh:name "emails" ;
+        sh:class <https://w3id.org/rdf-connect#Reader> ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+      ]
+    ]
+  ] ;
+  rdfs:description "Microservice that delivers emails from a mail folder" ;
+  rdfs:seeAlso <https://github.com/lblod/berichtencentrum-deliver-email-service> ;
+  dct:requires sw:triple-store ,
+               sw:mu-identifier ;
+  dcat:qualifiedRelation 
+        [
+            dcat:hadRole tcs:inputShape ;
+            dct:relation loket:EmailShape # local: aligned with error-alert's output (upstream said MailShape, to verify)
+        ] ,
+        [
+        a dcat:Relationship;
+        dcat:hadRole tcs:configShape ;
+        dct:relation sw:genericSWConfigShape 
+        ],
+        [
+        a dcat:Relationship;
+        dcat:hadRole tcs:wrappedConfigShape ;
+        dct:relation [
+            a sh:NodeShape;
+            # ...
+            # the variables from here https://github.com/lblod/berichtencentrum-deliver-email-service#environment-variables
+            # with additional constraints that we can express
+        ]
+    ] ; 
+    tcs:unwrapConfig "CONSTRUCT ...." ; # no delta rules; no additional files
+    # the variables from above translated trivially to docker variables
+  tcs:config :DeliverEmailServiceDockerCompose .
+
+# shapes can be more specific and depend on input but yeah...
+# shapes defined by llm; to verify!
+
+loket:ErrorShape a sh:NodeShape ;
+    sh:targetClass oslc:Error ;
+
+    sh:property [
+        sh:path mu:uuid ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+
+    sh:property [
+        sh:path dct:subject ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+
+    sh:property [
+        sh:path oslc:message ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+
+    sh:property [
+        sh:path dct:created ;
+        sh:datatype xsd:dateTime ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+
+    sh:property [
+        sh:path dct:creator ;
+        sh:nodeKind sh:IRI ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+
+    sh:property [
+        sh:path dct:references ;
+        sh:nodeKind sh:IRI ;
+        sh:minCount 0 ;
+        sh:maxCount 1 ;
+    ] ;
+
+    sh:property [
+        sh:path oslc:largePreview ;
+        sh:datatype xsd:string ;
+        sh:minCount 0 ;
+        sh:maxCount 1 ;
+    ] .
+
+loket:EmailShape a sh:NodeShape ;
+    sh:targetClass nmo:Email ;
+
+    sh:property [
+        sh:path mu:uuid ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+
+    sh:property [
+        sh:path nmo:isPartOf ;
+        sh:nodeKind sh:IRI ;
+        sh:hasValue <http://data.lblod.info/id/mail-folders/2> ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+
+    sh:property [
+        sh:path nmo:messageSubject ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+
+    sh:property [
+        sh:path nmo:htmlMessageContent ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+
+    sh:property [
+        sh:path nmo:emailTo ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+
+    sh:property [
+        sh:path nmo:messageFrom ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+
+    sh:property [
+        sh:path dct:creator ;
+        sh:nodeKind sh:IRI ;
+        sh:hasValue <http://lblod.data.gift/services/loket-error-alert-service> ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+    ] ;
+
+    sh:property [
+        sh:path dct:references ;
+        sh:nodeKind sh:IRI ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:node loket:ErrorReadShape ;
+    ] .
+
+# ----- from ldio.ttl -----
+@prefix : <http://example.org/example/> .
+@prefix dcat: <http://www.w3.org/ns/dcat#> .
+@prefix dct: <http://purl.org/dc/terms/> .
+@prefix ldio: <http://example.org/example/ldio/> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix spdx: <http://spdx.org/rdf/terms#> .
+@prefix tcs: <https://w3id.org/toolchain#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+ldio:HttpInPoller a tcs:PipelineComponent, dcat:Resource;
+    rdfs:label "Ldio:HttpInPoller" ; 
+    rdfs:description "The LDIO Http In Poller is a basic Http Poller that will poll a target URL on a specified interval.";
+    ldio:type "Input" ;
+    rdfs:seeAlso "https://informatievlaanderen.github.io/VSDS-Linked-Data-Interactions/2.8.0-SNAPSHOT/ldio/ldio-inputs/ldio-http-in-poller" ;
+    dct:requires ldio:LinkedDataInteractionsOrchestrator ;
+    dcat:qualifiedRelation [
+        a dcat:Relationship;
+        dcat:hadRole tcs:wrappedConfigShape ;
+        dct:relation [
+          a sh:NodeShape 
+          # checking that api has indeed json+ld as format...
+       ]
+       ],
+      [
+        a dcat:Relationship;
+        dcat:hadRole tcs:configShape ;
+        dct:relation [
+          a sh:NodeShape;
+          sh:node ldio:HttpRequesterShape;
+          sh:property [
+              sh:path ldio:url;
+              sh:name "url";
+              sh:description "Target URL to poll from.";
+              sh:datatype xsd:string;
+              sh:minCount 1; # Lists are supported
+          ], [
+            sh:path ldio:cron;
+            sh:name "cron";
+            sh:description "Cron expression to declare when the polling should take place. Schedules are in UTC timezone.";
+            sh:datatype xsd:string;
+            sh:minCount 1; # Required unless `interval` is used instead (interval is on a deprecation path per the docs)
+            sh:maxCount 1;
+         ], [
+            sh:path ldio:interval;
+            sh:name "interval";
+            sh:description "Polling interval declared in ISO 8601 format.";
+            sh:datatype xsd:string;
+            sh:maxCount 1;
+         ], [
+            sh:path ldio:continueOnFail;
+            sh:name "continueOnFail";
+            sh:description "Indicates if polling should continue if a previous poll resulted in failure.";
+            sh:datatype xsd:boolean;
+            sh:maxCount 1;
+         ]
+        ]
+        ] ;
+        tcs:unwrapConfig "CONSTRUCT ..." ;
+        tcs:resolver tcs:apiCheck
+.
+
+
+
+
+# ----- local additions for the guided suggestion chain -----
+# Alert monitor: the threshold check that *emits* alerts (the per-unit
+# ThresholdMonitor(Cm|Mm) stay deliberately pass-through for the cm/mm
+# mismatch demo; this one turns measurements into oslc:Error alerts, so the
+# suggestion chain can continue towards the store and the dashboard).
+demo:AlertMonitorCm a tcs:PipelineComponent, dcat:DataService, dcat:Resource ;
+  rdfs:label "Alert monitor (cm)" ;
+  rdfs:comment "Checks centimetre measurements against a threshold and emits an oslc:Error alert on violation." ;
+  rdfc:jsImplementationOf rdfc:Processor ;
+  rdfc:class "AlertMonitorCm" ;
+  dcat:qualifiedRelation [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:configShape ;
+    dcterms:relation [
+      a sh:NodeShape ;
+      sh:targetClass demo:AlertMonitorCm ;
+      sh:property [
+        sh:path rdfc:threshold ;
+        sh:name "threshold" ;
+        sh:datatype xsd:double ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 0 ;
+      ] , [
+        sh:path rdfc:input ;
+        sh:name "input" ;
+        sh:class rdfc:Reader ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 1 ;
+      ] , [
+        sh:path rdfc:output ;
+        sh:name "output" ;
+        sh:class rdfc:Writer ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 2 ;
+      ]
+    ]
+  ] , [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:inputShape ;
+    dcterms:relation demo:MeasurementsInCmShape ;
+  ] , [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:outputShape ;
+    dcterms:relation lblodsh:ErrorShape ;
+  ] .
+
+# The Elody alert dashboard as a pipeline component (ticket #164374): a
+# declarative consumer — input contract is the alert shape, delivery runs
+# implicitly through the central store, no runtime code.
+demo:ElodyAlertDashboard a tcs:PipelineComponent, dcat:DataService, dcat:Resource ;
+  rdfs:label "Alert dashboard (Elody)" ;
+  rdfs:comment "Renders oslc:Error alerts from the central store as a SHACL-driven dashboard in Elody." ;
+  dcat:qualifiedRelation [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:configShape ;
+    dcterms:relation [
+      a sh:NodeShape ;
+      sh:targetClass demo:ElodyAlertDashboard ;
+      # one reader port so the alerts input is connectable in the builder;
+      # at run time the delivery is implicit through the central store
+      sh:property [
+        sh:path rdfc:alerts ;
+        sh:name "alerts" ;
+        sh:class rdfc:Reader ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 0 ;
+      ]
+    ]
+  ] , [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:inputShape ;
+    dcterms:relation lblodsh:ErrorShape ;
+  ] .
+
+
+# The mm twin of the alert monitor (Koen's suggestion, 2026-08-28): a text
+# search for "alert monitor" shows both variants, while the shape-guided
+# suggestions automatically keep only the one matching the chain's unit.
+demo:AlertMonitorMm a tcs:PipelineComponent, dcat:DataService, dcat:Resource ;
+  rdfs:label "Alert monitor (mm)" ;
+  rdfs:comment "Checks millimetre measurements against a threshold and emits an oslc:Error alert on violation." ;
+  rdfc:jsImplementationOf rdfc:Processor ;
+  rdfc:class "AlertMonitorMm" ;
+  dcat:qualifiedRelation [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:configShape ;
+    dcterms:relation [
+      a sh:NodeShape ;
+      sh:targetClass demo:AlertMonitorMm ;
+      sh:property [
+        sh:path rdfc:threshold ;
+        sh:name "threshold" ;
+        sh:datatype xsd:double ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 0 ;
+      ] , [
+        sh:path rdfc:input ;
+        sh:name "input" ;
+        sh:class rdfc:Reader ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 1 ;
+      ] , [
+        sh:path rdfc:output ;
+        sh:name "output" ;
+        sh:class rdfc:Writer ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 2 ;
+      ]
+    ]
+  ] , [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:inputShape ;
+    dcterms:relation demo:MeasurementsInMmShape ;
+  ] , [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:outputShape ;
+    dcterms:relation lblodsh:ErrorShape ;
+  ] .
+
+# ===== END local demo copy =====
