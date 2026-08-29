@@ -65,6 +65,71 @@ class GithubSerializer:
             if filter_type == "text" and filter_value and filter_value != "*":
                 params["q_extra"] = filter_value
 
+            if filter_type == "selection" and "related_to_pipeline" in str(
+                filter_key
+            ):
+                # The panel's "components of this pipeline" listing: resolved
+                # server-side from the pipeline's relations, so a fresh save is
+                # visible without waiting for the client's parent refetch.
+                if isinstance(filter_value, list):
+                    ids = [v for v in filter_value if v]
+                elif filter_value:
+                    ids = [filter_value]
+                else:
+                    ids = []
+                # empty means "no parent context": restrict to nothing rather
+                # than falling through to the full discovery listing
+                params["related_to_pipeline"] = ids
+                continue
+
+            if filter_type == "selection" and "suggest_for_pipeline" in str(
+                filter_key
+            ):
+                # Shape-guided suggestions by pipeline id: the store resolves
+                # the pipeline's chain tail itself (the picker context only
+                # knows the parent id, not the relation values).
+                if isinstance(filter_value, list):
+                    ids = [v for v in filter_value if v]
+                elif filter_value:
+                    ids = [filter_value]
+                else:
+                    ids = []
+                if ids:
+                    params["suggest_for_pipeline"] = ids
+                continue
+
+            if filter_type == "selection" and "suggest_for_shape" in str(
+                filter_key
+            ):
+                # Port-scoped suggestions: the picker was opened from one
+                # output port, so the compatible shapes are known outright --
+                # no pipeline resolution needed.
+                if isinstance(filter_value, list):
+                    iris = [v for v in filter_value if v]
+                elif filter_value:
+                    iris = [filter_value]
+                else:
+                    iris = []
+                if iris:
+                    params["suggest_for_shape"] = iris
+                continue
+
+            if filter_type == "selection" and "compatible_with" in str(filter_key):
+                # Shape-guided suggestions: the pipeline's current component
+                # ids travel through to the store, which floats components
+                # whose input shape matches the last one's output shape.
+                # Never an identifiers restriction; an empty list means "no
+                # tail yet", so nothing to rank by.
+                if isinstance(filter_value, list):
+                    ids = [v for v in filter_value if v]
+                elif filter_value:
+                    ids = [filter_value]
+                else:
+                    ids = []
+                if ids:
+                    params["compat_ids"] = ids
+                continue
+
             if filter_type == "selection" and "identifiers" in str(filter_key):
                 if filter_value is None:
                     ids = []

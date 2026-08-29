@@ -360,10 +360,35 @@ class DishacledHttpStorageManager(HttpStorageManager):
         sort=None,
         asc=True,
     ):
+        # A `compatible_with` filter is ours, not GitHub's: it carries the
+        # pipeline's current component ids so the listing can float the
+        # components whose input shape matches the last one's output shape to
+        # the top (shape-guided suggestions in the picker). Popped here so the
+        # github_filter serializer never sees an unknown key.
+        compat_ids = None
+        if isinstance(filters, list):
+            kept = []
+            for f in filters:
+                keys = f.get("key") if isinstance(f, dict) else None
+                keys = keys if isinstance(keys, list) else [keys]
+                if isinstance(f, dict) and "compatible_with" in keys:
+                    value = f.get("value")
+                    compat_ids = value if isinstance(value, list) else [value]
+                else:
+                    kept.append(f)
+            filters = kept
+
+        suggest_pipeline_ids = None
+        suggest_shape_iris = None
+        related_pipeline_ids = None
         # filters can be a dict (already serialized) or a list (raw)
         if isinstance(filters, dict):
             identifiers = filters.get("identifiers")
             extra_query = filters.get("q_extra", "")
+            compat_ids = filters.get("compat_ids") or compat_ids
+            suggest_pipeline_ids = filters.get("suggest_for_pipeline")
+            suggest_shape_iris = filters.get("suggest_for_shape")
+            related_pipeline_ids = filters.get("related_to_pipeline")
         else:
             identifiers = None
             extra_query = ""
@@ -377,12 +402,64 @@ class DishacledHttpStorageManager(HttpStorageManager):
                 if isinstance(filter_params, dict):
                     identifiers = filter_params.get("identifiers")
                     extra_query = filter_params.get("q_extra", "")
+                    compat_ids = filter_params.get("compat_ids") or compat_ids
+                    suggest_pipeline_ids = filter_params.get("suggest_for_pipeline")
+                    suggest_shape_iris = filter_params.get("suggest_for_shape")
+
+        # Pipeline-driven suggestions: resolve the chain's tail component from
+        # the pipeline itself. Hard-filters the listing to actual matches, but
+        # only while the user is not searching — a search term lifts the
+        # filter so incompatible components stay reachable on purpose.
+        # The panel's related listing: the pipeline's current components, read
+        # from the store itself so a fresh save shows without a parent refetch.
+        if related_pipeline_ids is not None:
+            keys = []
+            for pid in related_pipeline_ids:
+                keys.extend(self._pipeline_processor_keys(pid))
+            identifiers = keys
+
+        # Suggestions cover fan-out: a component is suggested when its input
+        # shape matches the output of ANY component already in the pipeline —
+        # one producer may feed several consumers (monitor → dashboard AND
+        # monitor → sparql-ingest), so the frontier is every open output, not
+        # just the chain's last link.
+        hard_suggest = False
+        compat_shapes = None
+        if suggest_shape_iris:
+            # The picker was opened from one specific output port, so this is
+            # the most precise scope there is: exactly that port's shape(s),
+            # no pipeline resolution. A search term lifts the hard filter the
+            # same way it does for pipeline-wide suggestions.
+            values = (
+                suggest_shape_iris
+                if isinstance(suggest_shape_iris, list)
+                else [suggest_shape_iris]
+            )
+            compat_shapes = {str(v) for v in values if v}
+            hard_suggest = not extra_query
+        elif compat_ids:
+            compat_shapes = self._output_shapes_of(collection, compat_ids)
+        elif suggest_pipeline_ids:
+            keys = []
+            for pid in suggest_pipeline_ids:
+                keys.extend(self._pipeline_processor_keys(pid))
+            components = []
+            for key in keys:
+                component_id, _ = split_component_key(key)
+                components.append(component_id or key)
+            if components:
+                compat_shapes = self._output_shapes_of(collection, components)
+                hard_suggest = not extra_query
 
         # A present (even if empty) identifiers filter restricts the result to
         # exactly those identifiers. An empty list yields no results without
         # falling through to the "search all repos by topic" branch below.
         if identifiers is not None:
-            return self._get_items_by_identifiers(collection, identifiers, skip, limit)
+            return self._with_compat_sort(
+                self._get_items_by_identifiers(collection, identifiers, skip, limit),
+                compat_shapes,
+                hard=hard_suggest,
+            )
 
         page_size = limit
         page_number = (skip // limit) + 1 if limit else 1
@@ -407,12 +484,16 @@ class DishacledHttpStorageManager(HttpStorageManager):
 
         response = self.session.get(url, headers=self._get_headers(), params=params)
         if response.status_code not in [200]:
-            return {
-                "results": local_documents,
-                "count": len(local_documents),
-                "limit": limit,
-                "skip": skip,
-            }
+            return self._with_compat_sort(
+                {
+                    "results": local_documents,
+                    "count": len(local_documents),
+                    "limit": limit,
+                    "skip": skip,
+                },
+                compat_shapes,
+                hard=hard_suggest,
+            )
 
         data = response.json()
         results = data.get("items", [])
@@ -427,12 +508,140 @@ class DishacledHttpStorageManager(HttpStorageManager):
         # next page) and a page simply yields at least as many rows as it did.
         total_count = data.get("total_count", 0) + len(local_documents)
 
-        return {
-            "results": prepared_documents,
-            "count": total_count,
-            "limit": limit,
-            "skip": skip,
-        }
+        return self._with_compat_sort(
+            {
+                "results": prepared_documents,
+                "count": total_count,
+                "limit": limit,
+                "skip": skip,
+            },
+            compat_shapes,
+            hard=hard_suggest,
+        )
+
+    def _pipeline_processor_relations(self, pipeline_id):
+        """The pipeline's hasProcessor relations (key + metadata), in order.
+
+        Imported lazily: storage.routing pulls in configuration, which imports
+        this module -- a top-level import would be circular.
+        """
+        try:
+            from storage.routing import get_external_storage
+
+            doc = get_external_storage("sparql").get_item_from_collection_by_id(
+                "pipelines", pipeline_id
+            )
+        except Exception:
+            return []
+        return [
+            r
+            for r in (doc or {}).get("relations", [])
+            if r.get("type") == "hasProcessor" and r.get("key")
+        ]
+
+    def _pipeline_processor_keys(self, pipeline_id):
+        return [r["key"] for r in self._pipeline_processor_relations(pipeline_id)]
+
+    def _pipeline_tail_component(self, pipeline_id):
+        """The chain's tail: the last component not consumed as a producer.
+
+        Relation order alone is not the chain -- a connect-save may rewrite the
+        relations in a different order. The `connections.<port>.from` metadata
+        says which components already feed another one; the tail is the last
+        relation whose component nobody consumes. With no connections at all
+        this degrades to the last relation, which is the freshest addition.
+        """
+        relations = self._pipeline_processor_relations(pipeline_id)
+        if not relations:
+            return None
+
+        def norm(value):
+            step = str(value).split("|")[0].split("~")[0]
+            return step[len("local--"):] if step.startswith("local--") else step
+
+        consumed = set()
+        for rel in relations:
+            for entry in rel.get("metadata") or []:
+                key = str(entry.get("key", ""))
+                if (
+                    key.startswith("connections.")
+                    and key.endswith(".from")
+                    and entry.get("value")
+                ):
+                    consumed.add(norm(entry["value"]))
+
+        unconsumed = [
+            r["key"] for r in relations if norm(r["key"]) not in consumed
+        ]
+        pick = unconsumed[-1] if unconsumed else relations[-1]["key"]
+        # split_component_key, not _split_component_id: the relation key is a
+        # component id (possibly `component~instance`), never `owner--repo`.
+        component_id, _ = split_component_key(pick)
+        return component_id or pick
+
+    def _output_shapes_of(self, collection, component_ids):
+        """The union of output-shape IRIs over the given components."""
+        shapes = set()
+        for component_id in component_ids:
+            try:
+                doc = self.get_item_from_collection_by_id(collection, component_id)
+            except Exception:
+                continue
+            for port in ((doc or {}).get("data") or {}).get("ports") or []:
+                if port.get("direction") == "out" and port.get("shapeIri"):
+                    shapes.add(port["shapeIri"])
+        return shapes
+
+    # Store-plumbing the compiler inserts (per the logical scenario-a model);
+    # real components a user may still find via search, but never suggested
+    # as the next chain step.
+    SUGGESTION_PLUMBING_IRIS = {
+        "https://w3id.org/rdf-connect#SPARQLIngest",
+        "https://w3id.org/rdf-connect#Sdsify",
+        "https://w3id.org/rdf-connect#SkolemizationProcessor",
+    }
+
+    def _is_plumbing(self, item) -> bool:
+        iri = ((item.get("data") or {}).get("componentIri")) or ""
+        return iri in self.SUGGESTION_PLUMBING_IRIS
+
+    def _with_compat_sort(self, result, out_shapes, hard=False):
+        """Float shape-compatible components to the top of a listing.
+
+        `out_shapes` is what the pipeline currently produces; a component
+        whose input shape consumes any of it is a suggestion. Ranking, not
+        filtering (unless `hard`): an incompatible component stays listed
+        below the suggestions, so the deliberate-mismatch path keeps working.
+        """
+        if not out_shapes:
+            return result
+
+        def rank(item):
+            item_ports = ((item.get("data") or {}).get("ports")) or []
+            inputs = [p for p in item_ports if p.get("direction") == "in"]
+            if any(p.get("shapeIri") in out_shapes for p in inputs):
+                return 0  # input shape matches the tail's output: suggest first
+            if any(not p.get("shapeIri") for p in inputs):
+                return 1  # consumes, but carries no contract to judge by
+            if inputs:
+                return 2  # consumes something else: the mismatch candidates
+            return 3  # sources consume nothing, never a follow-up suggestion
+
+        ordered = sorted(result["results"], key=rank)
+        if hard:
+            matches = [
+                item
+                for item in ordered
+                if rank(item) == 0 and not self._is_plumbing(item)
+            ]
+            # Suggestions, not a dead end: with no real matches the full
+            # (sorted) list stays, rather than an empty picker.
+            if matches:
+                result["results"] = matches
+                result["count"] = len(matches)
+                return result
+        result["results"] = ordered
+        return result
 
     def _components_of_all(self, collection, repos):
         """Every component of every repository on a page.
