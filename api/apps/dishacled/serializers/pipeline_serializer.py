@@ -60,6 +60,7 @@ from apps.dishacled.pipeline.connections import (
 from apps.dishacled.serializers.pipeline_ttl_serializer import (
     CHANNEL_CLASSES,
     shape_index_for,
+    shape_index_for_shape_node,
 )
 
 
@@ -225,11 +226,15 @@ class PipelineSerializer:
             target_class = (
                 graph.value(shape_node, SH.targetClass) if shape_node else None
             )
-            shape = (
-                shape_index_for(graph, target_class, shapes_by_class)
-                if target_class is not None
-                else None
-            )
+            if target_class is not None:
+                shape = shape_index_for(graph, target_class, shapes_by_class)
+            else:
+                # a hand-authored catalog shape carries no target class; index
+                # it by its node, or its port names -- and every connection
+                # bound through them -- are unreadable on the way back
+                shape = shape_index_for_shape_node(
+                    graph, shape_node, shapes_by_class
+                )
             components[iri] = _Component(
                 iri, self._identifier_of(graph, iri), shape
             )
@@ -237,13 +242,25 @@ class PipelineSerializer:
 
     @staticmethod
     def _config_shape(graph, component):
+        """The config shape that actually describes this component's fields.
+
+        The shared catalog can attach more than one `tcs:configShape` to a
+        component -- a placeholder next to the shape that declares the ports.
+        A shape that says something (has `sh:property`) wins over one that
+        does not, whichever the graph happens to iterate first.
+        """
+        fallback = None
         for relation in graph.objects(component, DCAT.qualifiedRelation):
             if graph.value(relation, DCAT.hadRole) != TCS.configShape:
                 continue
             shape = graph.value(relation, DCT.relation)
-            if shape is not None:
+            if shape is None:
+                continue
+            if next(graph.objects(shape, SH.property), None) is not None:
                 return shape
-        return None
+            if fallback is None:
+                fallback = shape
+        return fallback
 
     # -- steps -------------------------------------------------------------
 

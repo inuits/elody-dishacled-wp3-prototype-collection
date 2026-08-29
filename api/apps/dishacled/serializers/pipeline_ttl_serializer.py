@@ -191,6 +191,31 @@ def shape_index_for(graph, target_class, shapes_by_class=None):
     return _ShapeIndex._build(graph, target_class, shapes_by_class, {target_class})
 
 
+def shape_index_for_shape_node(graph, shape_node, shapes_by_class=None):
+    """The property bindings of one shape, addressed by its node.
+
+    `shape_index_for` addresses a shape by its `sh:targetClass`, which every
+    shape the codegen writes carries. A shape authored by hand in the shared
+    catalog -- the anonymous config shape that only declares a component's
+    reader/writer ports -- often has none, and reading a definition back must
+    still resolve its port names, or the connections bound through those ports
+    silently disappear from the entity. The shape node itself is the index key
+    then; nothing downstream reads the target class of the root shape.
+    """
+    if shape_node is None:
+        return None
+    if shapes_by_class is None:
+        shapes_by_class = {
+            target: shape
+            for shape in graph.subjects(RDF.type, SH.NodeShape)
+            if (target := graph.value(shape, SH.targetClass)) is not None
+        }
+    key = graph.value(shape_node, SH.targetClass) or shape_node
+    return _ShapeIndex._build(
+        graph, key, {**shapes_by_class, key: shape_node}, {key}
+    )
+
+
 def emit_config_values(g, subject, shape, values, base_uri, channels):
     """Emit one shape's config values onto `subject`, recursing into nested nodes.
 
