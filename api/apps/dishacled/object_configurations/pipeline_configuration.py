@@ -1,9 +1,17 @@
+from logging import getLogger
 from os import getenv
 
+from apps.dishacled.pipeline.connections import (
+    autoconnect_new_relations,
+    split_component_key,
+)
 from apps.dishacled.serializers.pipeline_serializer import PipelineSerializer
 from elody.object_configurations.elody_configuration import (
     ElodyConfiguration,
 )
+
+
+log = getLogger(__name__)
 
 
 class PipelineConfiguration(ElodyConfiguration):
@@ -23,7 +31,11 @@ class PipelineConfiguration(ElodyConfiguration):
     collection of its own. The routes stay `/entities/...`; the engine is
     addressed as `pipelines`. See `docs/pipeline-storage.md`.
 
-    There is no crud hook. Publishing used to be one -- the store was a mirror
+    The one crud hook wires new components up: a component added to the
+    pipeline whose input shape matches the output of a component already
+    there gets its connection written on the spot
+    (`autoconnect_new_relations`), so picking from the shape-scoped picker is
+    the whole gesture. Publishing used to be a hook too -- the store was a mirror
     of Mongo, kept in step after the fact -- and now the write *is* the
     publication, so there is nothing left to mirror. The chain validation that
     lived in the pre-hook moved with it: a verdict is Elody's reading of a
@@ -64,6 +76,35 @@ class PipelineConfiguration(ElodyConfiguration):
             },
         }
         return {**super().crud(), **crud}
+
+    def _pre_crud_hook(self, *, crud, unpatched_document={}, **kwargs):
+        document = super()._pre_crud_hook(
+            crud=crud, unpatched_document=unpatched_document, **kwargs
+        )
+        if document and crud in ("create", "update"):
+            # never fail the save over a convenience: an unreachable component
+            # catalog just means the user connects by hand, as before
+            try:
+                autoconnect_new_relations(
+                    document.get("relations") or [],
+                    (unpatched_document or {}).get("relations") or [],
+                    self.__ports_of,
+                )
+            except Exception:
+                log.exception("Auto-connect skipped")
+        return document
+
+    @staticmethod
+    def __ports_of(relation_key):
+        """One component's ports, from the same source the suggestions read."""
+        from configuration import get_storage_mapper
+
+        component_id, _ = split_component_key(relation_key or "")
+        storage = get_storage_mapper().get("http")()
+        document = storage.get_item_from_collection_by_id(
+            "githubProcessors", component_id or relation_key
+        )
+        return ((document or {}).get("data") or {}).get("ports") or []
 
     def document_info(self):
         return {

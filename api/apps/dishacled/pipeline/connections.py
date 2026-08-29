@@ -328,13 +328,15 @@ def channel_name_between(
 ) -> str:
     """The channel a connection gets when the user did not name one.
 
-    Built from the two *step* ids, not the two component names: a component
-    used twice feeds two different steps, and naming both channels after the
-    component would collapse them back into one.
+    Named for the producing *step* and its port only: one output port carries
+    one channel, and every consumer of that port reads the same channel. A
+    per-pair name looked tidier but broke fan-out -- connecting a second
+    consumer renamed the producer's channel and orphaned the first one on the
+    next store round-trip. The consumer arguments stay for signature
+    compatibility; they are deliberately not part of the name.
     """
-    return "-".join(
-        [slugify(source), slugify(source_port), "to", slugify(target), slugify(target_port)]
-    )
+    del target, target_port
+    return "-".join([slugify(source), slugify(source_port), "channel"])
 
 
 def default_channel_name(
@@ -366,6 +368,79 @@ def default_channel_name(
 # metadata, which is what an id typed by hand or set before a save looks like.
 INSTANCE_FIELD = "instance"
 INSTANCE_SEPARATOR = "~"
+
+
+def autoconnect_new_relations(relations, previous_relations, ports_of) -> int:
+    """Wire newly added hasProcessor relations to a matching producer.
+
+    Called from the pipeline configuration's pre-crud hook on every save: a
+    relation that was not in the previous document, has input ports and
+    carries no connection yet is connected to the most recently added
+    component whose output shape matches -- so picking a component from the
+    shape-scoped picker is the whole gesture. Existing relations are never
+    touched (a deliberately disconnected component stays disconnected), and a
+    connection the caller already wrote is respected.
+
+    `ports_of` maps a relation key to that component's port list (the same
+    `data.ports` the suggestion machinery reads). Mutates the new relations'
+    metadata in place and returns how many connections were written.
+    """
+    processors = [
+        rel for rel in relations or [] if (rel or {}).get("type") == PROCESSOR_RELATION
+    ]
+    previous_keys = {
+        rel.get("key")
+        for rel in previous_relations or []
+        if (rel or {}).get("type") == PROCESSOR_RELATION
+    }
+
+    connected = 0
+    for rel in processors:
+        if rel.get("key") in previous_keys:
+            continue
+        metadata = rel.setdefault("metadata", [])
+        already_connected = any(
+            str(entry.get("key", "")).startswith(f"{CONNECTIONS_KEY}.")
+            and str(entry.get("key", "")).endswith(f".{SOURCE_FIELD}")
+            and entry.get("value")
+            for entry in metadata
+        )
+        if already_connected:
+            continue
+
+        inputs = [
+            port
+            for port in (ports_of(rel.get("key")) or [])
+            if port.get("direction") == "in"
+        ]
+        for port in inputs:
+            shape = port.get("shapeIri")
+            if not shape:
+                continue
+            producer = None
+            for candidate in processors:
+                if candidate is rel:
+                    continue
+                for candidate_port in ports_of(candidate.get("key")) or []:
+                    if candidate_port.get("direction") != "out":
+                        continue
+                    if _shape_match(candidate_port.get("shapeIri"), shape):
+                        # relations are in the order they were added, so the
+                        # last match is the chain's most recent open output
+                        producer = (
+                            candidate.get("key"),
+                            candidate_port.get("name") or "out",
+                        )
+            if producer is None:
+                continue
+            metadata.append(
+                {
+                    "key": f"{CONNECTIONS_KEY}.{port.get('name')}.{SOURCE_FIELD}",
+                    "value": f"{producer[0]}{PORT_SEPARATOR}{producer[1]}",
+                }
+            )
+            connected += 1
+    return connected
 
 
 def split_component_key(key) -> tuple[str, str | None]:
