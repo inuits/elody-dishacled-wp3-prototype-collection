@@ -436,8 +436,15 @@ class PipelineSerializer:
     def _connection_metadata(
         self, graph, step, by_channel_writer, channel_base
     ) -> list:
-        """The `connections.<port>.*` keys for everything feeding this step."""
+        """The wiring metadata for everything feeding this step.
+
+        Emits both forms: the flat `connections.<port>.*` keys (the connect
+        form's fields) and a single structured `connections` entry — the
+        typed shape `{<port>: {"from": "<step>|<port>"}}` the pipeline view
+        mode reads.
+        """
         metadata = []
+        structured = {}
         for channel in sorted(graph.objects(step["node"], TCS.readsFrom), key=str):
             producer = by_channel_writer.get(channel)
             if producer is None or producer is step:
@@ -447,18 +454,20 @@ class PipelineSerializer:
             if not target_port or not source_port:
                 continue
 
+            reference = (
+                f"{producer.get('instance') or producer['key']}"
+                f"{PORT_SEPARATOR}{source_port}"
+            )
             metadata.append(
                 {
                     "key": f"{CONNECTIONS_KEY}.{target_port}.{SOURCE_FIELD}",
                     # the producing *step*, not its component: a component used
                     # twice is two producers, and naming the component would
                     # leave which one feeds this port to a guess
-                    "value": (
-                        f"{producer.get('instance') or producer['key']}"
-                        f"{PORT_SEPARATOR}{source_port}"
-                    ),
+                    "value": reference,
                 }
             )
+            structured[target_port] = {SOURCE_FIELD: reference}
             channel_name = self._channel_name(channel, channel_base)
             if channel_name != self._default_channel(
                 producer, source_port, step, target_port
@@ -471,6 +480,9 @@ class PipelineSerializer:
                         "value": channel_name,
                     }
                 )
+                structured[target_port][CHANNEL_FIELD] = channel_name
+        if structured:
+            metadata.append({"key": CONNECTIONS_KEY, "value": structured})
         return metadata
 
     def _port_for(self, graph, step, channel):
