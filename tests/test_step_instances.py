@@ -39,6 +39,27 @@ from apps.dishacled.serializers.pipeline_ttl_serializer import (
 )
 
 
+def _step_slugs(ttl: str) -> set[str]:
+    """The step IRIs a definition declares, by their last path segment.
+
+    Read off the parsed graph rather than the text: a step compacts to
+    `step:<slug>` now that the document binds a prefix for the step namespace
+    (the generator interpolates compacted IRIs into SPARQL, so they have to be
+    legal CURIEs), and what these tests are about is which steps exist.
+    """
+    from rdflib import Graph, URIRef
+    from rdflib.namespace import RDF
+
+    graph = Graph()
+    graph.parse(data=ttl, format="turtle")
+    return {
+        str(step).rsplit("/", 1)[-1]
+        for step in graph.subjects(
+            RDF.type, URIRef("https://w3id.org/toolchain#InstancePipelineComponent")
+        )
+    }
+
+
 LOGGER_TTL = """\
 @prefix rdfc: <https://w3id.org/rdf-connect#>.
 @prefix sh:   <http://www.w3.org/ns/shacl#>.
@@ -262,9 +283,8 @@ class TestTheDefinitionExport:
         ).serialize(two_loggers("ticker|writer"), COMPONENTS)
 
     def test_both_loggers_are_steps(self):
-        ttl = self._ttl()
-        assert "step/logprocessorjs>" in ttl
-        assert "step/logprocessorjs-2>" in ttl
+        steps = _step_slugs(self._ttl())
+        assert {"logprocessorjs", "logprocessorjs-2"} <= steps
 
     def test_both_specialize_the_same_component(self):
         # the toolchain's own demo does exactly this
@@ -330,8 +350,7 @@ class TestReadingItBack:
         again = PipelineDefinitionSerializer(
             base_uri="http://elody.local/pipelines/pipeline-1/"
         ).serialize(entity, components)
-        assert "step/logprocessorjs>" in again
-        assert "step/logprocessorjs-2>" in again
+        assert {"logprocessorjs", "logprocessorjs-2"} <= _step_slugs(again)
         assert '"report"' in again and '"output"' in again
 
 

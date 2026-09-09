@@ -6,7 +6,9 @@ of truth. Every request to `/alerts` reaches the endpoint.
 
 This is the ingestion half of "Elody for alert visualisations"; rendering is
 A2. For the endpoint itself and its sample data see
-[`alert-fixture.md`](alert-fixture.md).
+[`alert-fixture.md`](alert-fixture.md); for the catalog entry that makes this
+consumption a declared step of the pipeline see
+[`alert-component.md`](alert-component.md).
 
 ## The path an alert takes
 

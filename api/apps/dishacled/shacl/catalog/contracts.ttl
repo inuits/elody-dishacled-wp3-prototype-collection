@@ -49,6 +49,10 @@
 @prefix tm:      <https://w3id.org/rdf-connect/threshold-monitor#> .
 @prefix lblodsh: <http://lblod.data.gift/shapes/> .
 
+# Elody's own components, in Elody's own namespace: the catalog it publishes
+# is its own, so what it contributes is not named in someone else's space.
+@prefix elody:   <https://elody.eu/components#> .
+
 
 #################################################################
 # Deployment coordinates
@@ -521,25 +525,117 @@ lblodsh:ErrorShape
 #################################################################
 # threshold-monitor -- the alert producer
 #
-# A real published processor, so this entry is an overlay: it adds the output
-# shape to the repository Elody already discovers on GitHub. `dcat:landingPage`
-# is what marks it as having a home elsewhere, which keeps it from also being
-# served as a local catalog-only component.
+# The component that actually raises an alert, and the only one in the demo
+# chain that is a *published* processor rather than a placeholder:
+# `@rdfc/threshold-monitor-processor-ts` on npm, from
+# https://github.com/rdf-connect/threshhold-monitor-processor.
 #
-# No `spdx:Package` / `owl:imports` here on purpose -- the deployment
-# coordinates are read off the repository's own package.json, and an empty
-# deployment in a contract deliberately does not overwrite them.
+# This used to be an overlay (`dcat:landingPage`, output shape only), on the
+# assumption that GitHub discovery finds the repository and supplies the config
+# shape and the coordinates. It does not: the repository carries no
+# `rdfc-processor` topic, so discovery never returns it and the entry was one
+# nothing ever completed -- the alert producer could not be put in a pipeline
+# at all. So the catalog carries the whole description, the way it does for
+# `rdfc:RmlMapper`, whose repository cannot supply coordinates either.
+# `rdfs:seeAlso` keeps the link without marking it as served elsewhere.
+#
+# Ask rdf-connect to add the topic and this can go back to being an overlay.
+#
+# The config shape is the published `processor.ttl`'s, with one deliberate
+# difference: upstream types `tm:path` as `sh:class rdfl:PathLens`, an rdf-lens
+# path *expression* (a sequence is an RDF list). Elody has no field for that,
+# and no released orchestrator can resolve it either (it registers rdfl:Path,
+# rdf-lens defines rdfl:PathLens -- see docs/toolchain-open-questions.md), so
+# it is declared here as the single-predicate case: one IRI, which is what the
+# form can offer and what the runner accepts. A chain needing a sequence path
+# has to pre-flatten the measurement, which is what the demonstrator's own
+# mapping step does.
 #
 # No input shape: the processor reads SDS members, whose shape is a property
 # of the stream rather than of the processor, so the input port stays untyped.
 #################################################################
 
-tm:ThresholdMonitorJs a tcs:PipelineComponent, dcat:DataService ;
+tm:ThresholdMonitorJs a tcs:PipelineComponent, dcat:DataService, dcat:Resource ;
   rdfs:label "Threshold monitor" ;
-  rdfs:comment "Watches a stream of measurements and writes an oslc:Error whenever a value falls outside the configured bounds." ;
-  dcat:landingPage <https://github.com/rdf-connect/threshhold-monitor-processor> ;
+  rdfs:comment "Watches a stream of SDS members and writes an oslc:Error whenever the value at the configured path falls outside the configured bounds." ;
+  rdfs:seeAlso <https://github.com/rdf-connect/threshhold-monitor-processor> ;
+  rdfc:jsImplementationOf rdfc:Processor ;
+  rdfc:class "ThresholdMonitor" ;
+  dcterms:requires rdfc:NodeRunner , [
+    a spdx:Package ;
+    spdx:name "@rdfc/threshold-monitor-processor-ts" ;
+    spdx:versionInfo "^0.0.1-alpha.2" ;
+    spdx:suppliedBy :npm
+  ] ;
+  owl:imports <./node_modules/@rdfc/threshold-monitor-processor-ts/processor.ttl> ;
   dcterms:conformsTo lblodsh:ErrorShape ;
   dcat:qualifiedRelation [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:configShape ;
+    dcterms:relation [
+      a sh:NodeShape ;
+      sh:targetClass tm:ThresholdMonitorJs ;
+      sh:property [
+        sh:path tm:path ;
+        sh:name "path" ;
+        sh:description "Predicate the monitored value sits on, relative to the SDS member." ;
+        sh:datatype xsd:iri ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 0 ;
+      ] , [
+        sh:path tm:max ;
+        sh:name "max" ;
+        sh:description "Upper bound. A value above it raises an alert." ;
+        sh:datatype xsd:double ;
+        sh:maxCount 1 ;
+        sh:order 1 ;
+      ] , [
+        sh:path tm:min ;
+        sh:name "min" ;
+        sh:description "Lower bound. A value below it raises an alert. At least one bound is required." ;
+        sh:datatype xsd:double ;
+        sh:maxCount 1 ;
+        sh:order 2 ;
+      ] , [
+        sh:path tm:creator ;
+        sh:name "creator" ;
+        sh:description "Agent the alert is attributed to (dct:creator)." ;
+        sh:datatype xsd:iri ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 3 ;
+      ] , [
+        sh:path tm:stream ;
+        sh:name "streamId" ;
+        sh:description "Only monitor records of this SDS stream. Every record, if left empty." ;
+        sh:datatype xsd:iri ;
+        sh:maxCount 1 ;
+        sh:order 4 ;
+      ] , [
+        sh:path rdfs:label ;
+        sh:name "label" ;
+        sh:description "Name of the monitored value, used in the alert message." ;
+        sh:datatype xsd:string ;
+        sh:maxCount 1 ;
+        sh:order 5 ;
+      ] , [
+        sh:path rdfc:reader ;
+        sh:name "reader" ;
+        sh:class rdfc:Reader ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 6 ;
+      ] , [
+        sh:path rdfc:writer ;
+        sh:name "writer" ;
+        sh:class rdfc:Writer ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 7 ;
+      ]
+    ]
+  ] , [
     a dcat:Relationship ;
     dcat:hadRole tcs:outputShape ;
     dcterms:relation lblodsh:ErrorShape ;
@@ -597,6 +693,117 @@ demo:AlertStore a dcat:Dataset ;
     dcat:hadRole tcs:outputShape ;
     dcterms:relation lblodsh:ErrorShape ;
   ] .
+
+#################################################################
+# elody-alert-visualisation -- the alert consumer of last resort
+#
+# Elody's alert dashboard as a component of the composed pipeline rather than
+# an out-of-band viewer, which is what makes the chain validation cover the
+# last hop (monitor -> store -> Elody) and what lets discovery find Elody as a
+# service that can consume the alert data.
+#
+# The component is **declarative**: a catalog entry plus contracts, and no
+# processor code. That is the shape the demonstrator's `proposal` branch gives
+# the semantic.works services (`extensions.md`): input by *reading the central
+# store*, output by writing to it, no direct flows -- only implicit ones, and
+# "validation just checks that connections agree upon the contracts". Elody
+# consumes the store exactly that way (docs/alert-ingestion.md), so it is
+# modelled identically. Nothing here is installed: no `spdx:Package`, no
+# `owl:imports`, no runner.
+#
+# Input shape only. A dashboard is a sink -- it renders alerts and emits no
+# stream -- so it declares no output shape and gets no output port, and the
+# builder never offers it as a producer for a further step.
+#
+# `ErrorShape` is a *fixed* contract: it does not depend on how the dashboard
+# is configured, which is why no resolver function is needed for it (the
+# proposal-branch rule for components whose contracts vary with their config).
+#
+# The two config parameters are what Elody actually needs to read the alerts,
+# and they are the same two the running service takes as ALERT_SPARQL_ENDPOINT
+# and ALERT_GRAPH (.env.dist, docs/alert-fixture.md). The `alerts` reader is
+# the connectable port; at run time nothing is written to it, the delivery is
+# the store.
+#
+# The hand-off spelling for DiSHACLed/demonstrator lives in
+# docs/examples/demonstrator-elody.ttl -- it adds the proposal branch's
+# `tcs:wrappedConfigShape` / `tcs:unwrapConfig`, which nothing here reads yet.
+# See docs/alert-component.md.
+#################################################################
+
+elody:AlertVisualisation a tcs:PipelineComponent, dcat:DataService, dcat:Resource ;
+  rdfs:label "Alert visualisation (Elody)" ;
+  rdfs:comment "Renders oslc:Error alerts read from the central store as a SHACL-driven dashboard in Elody: an overview list and a detail view per alert." ;
+  rdfs:seeAlso <https://docs.elody.eu/> ;
+  # No `dcterms:requires demo:AlertStore`, tempting as it reads: the
+  # toolchain's application profile allows `dct:requires` to name only a
+  # `tcs:PipelineComponent` or an `spdx:Package`, and the alert store is a
+  # `dcat:Dataset` -- so it was reported as a violation by the generator's own
+  # validation report. The store is named where it is actually needed, in the
+  # two config parameters below. (In the demonstrator hand-off the same
+  # relation points at `sw:triple-store`, which *is* a component there.)
+  dcterms:conformsTo lblodsh:ErrorShape ;
+  # How it is deployed. The toolchain's application profile requires every
+  # `tcs:PipelineComponent` to reach a `tcs:DockerComposeConfig` along
+  # `dct:requires*` ("PipelineComponent {?this} is not deployable"), and there
+  # is nothing to argue with: a dashboard nobody deploys renders nothing. The
+  # semantic.works services in the demonstrator's catalog are described exactly
+  # this way, and this is the same service the client's own compose file runs.
+  tcs:config elody:AlertVisualisationDockerCompose ;
+  dcat:qualifiedRelation [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:configShape ;
+    dcterms:relation [
+      a sh:NodeShape ;
+      sh:targetClass elody:AlertVisualisation ;
+      sh:property [
+        sh:path elody:sparqlEndpoint ;
+        sh:name "sparqlEndpoint" ;
+        sh:description "SPARQL endpoint the alerts are read from (ALERT_SPARQL_ENDPOINT)." ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 0 ;
+      ] , [
+        sh:path elody:namedGraph ;
+        sh:name "namedGraph" ;
+        sh:description "Named graph the oslc:Error alerts live in (ALERT_GRAPH)." ;
+        sh:datatype xsd:string ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 1 ;
+      ] , [
+        # the connectable input port; the flow itself is implicit, through
+        # the store, exactly as it is for the semantic.works services
+        sh:path rdfc:alerts ;
+        sh:name "alerts" ;
+        sh:class rdfc:Reader ;
+        sh:minCount 1 ;
+        sh:maxCount 1 ;
+        sh:order 2 ;
+      ]
+    ]
+  ] , [
+    a dcat:Relationship ;
+    dcat:hadRole tcs:inputShape ;
+    dcterms:relation lblodsh:ErrorShape ;
+  ] .
+
+# The dashboard's own container. `ELODY_DASHBOARD_IMAGE` is a placeholder in the
+# same sense the demo components' package coordinates are: the shape is right
+# and the generator routes it correctly, but a deployment has to substitute the
+# image the environment actually runs.
+elody:AlertVisualisationDockerCompose
+  a tcs:Config, tcs:DefaultConfig, tcs:DockerComposeConfig ;
+  dcterms:format "text/yaml" ;
+  tcs:literal """
+elody-dashboard:
+  image: ELODY_DASHBOARD_IMAGE
+  environment:
+    ALERT_SPARQL_ENDPOINT: 'http://triplestore:3030/alerts/sparql'
+    ALERT_GRAPH: 'http://mu.semte.ch/graphs/errors'
+""" .
+
 
 #################################################################
 # rml-processor-jvm -- deployment coordinates only
@@ -1106,36 +1313,6 @@ demo:AlertMonitorCm a tcs:PipelineComponent, dcat:DataService, dcat:Resource ;
     dcat:hadRole tcs:outputShape ;
     dcterms:relation lblodsh:ErrorShape ;
   ] .
-
-# The Elody alert dashboard as a pipeline component (ticket #164374): a
-# declarative consumer — input contract is the alert shape, delivery runs
-# implicitly through the central store, no runtime code.
-demo:ElodyAlertDashboard a tcs:PipelineComponent, dcat:DataService, dcat:Resource ;
-  rdfs:label "Alert dashboard (Elody)" ;
-  rdfs:comment "Renders oslc:Error alerts from the central store as a SHACL-driven dashboard in Elody." ;
-  dcat:qualifiedRelation [
-    a dcat:Relationship ;
-    dcat:hadRole tcs:configShape ;
-    dcterms:relation [
-      a sh:NodeShape ;
-      sh:targetClass demo:ElodyAlertDashboard ;
-      # one reader port so the alerts input is connectable in the builder;
-      # at run time the delivery is implicit through the central store
-      sh:property [
-        sh:path rdfc:alerts ;
-        sh:name "alerts" ;
-        sh:class rdfc:Reader ;
-        sh:minCount 1 ;
-        sh:maxCount 1 ;
-        sh:order 0 ;
-      ]
-    ]
-  ] , [
-    a dcat:Relationship ;
-    dcat:hadRole tcs:inputShape ;
-    dcterms:relation lblodsh:ErrorShape ;
-  ] .
-
 
 # The mm twin of the alert monitor (Koen's suggestion, 2026-08-28): a text
 # search for "alert monitor" shows both variants, while the shape-guided

@@ -1,0 +1,111 @@
+# Elody's alert visualisation, for DiSHACLed/demonstrator@proposal
+#
+#     catalogs/components/elody.ttl
+#
+# The hand-off spelling of the entry Elody ships in
+# `api/apps/dishacled/shacl/catalog/contracts.ttl`. Same component, same
+# contract; what differs is the surroundings, and only where the demonstrator's
+# own files differ from ours:
+#
+#   * the ErrorShape IRI. The demonstrator declares the alert shape as
+#     `loket:ErrorShape` (`catalogs/components/sw.ttl`), Elody as
+#     `<http://lblod.data.gift/shapes/ErrorShape>` -- the IRI lblod's own
+#     consumer uses. They are the same shape with two names, and a connection
+#     is only valid if both ends name it identically, so this file uses the
+#     demonstrator's. Unifying the two is flagged in
+#     docs/toolchain-open-questions.md.
+#   * `tcs:wrappedConfigShape` + `tcs:unwrapConfig`. The proposal branch's
+#     config mechanism: the pipeline definer configures a component with the
+#     minimal wrapped config, and a CONSTRUCT query unwraps it into something
+#     satisfying `tcs:configShape`. Every component in the demonstrator's own
+#     catalogs carries both, so this one does too. Elody reads only
+#     `tcs:configShape`, which is why its own catalog carries that alone.
+#   * catalog membership. `:DishacledCatalog` is the demonstrator's catalog
+#     (`catalogs/components/main.ttl`); a component that is a `dcat:resource`
+#     of no `tcs:Catalog` fails `tcs:SpecializedComponentIsCatalogedShape` on
+#     every step that specialises it. Adding it here rather than editing
+#     main.ttl keeps the fragment self-contained -- the two documents union.
+#
+# The component is declarative: no runner, no package, nothing to install. Its
+# input arrives the way a semantic.works service's does, by reading the central
+# store (`extensions.md`), so it declares an input shape and no output shape.
+#
+# The step and the connection that put it in the pipeline definition are in
+# demonstrator-scenario-elody.ttl.
+
+@prefix :        <http://example.org/example/> .
+@prefix dcat:    <http://www.w3.org/ns/dcat#> .
+@prefix dct:     <http://purl.org/dc/terms/> .
+@prefix elody:   <https://elody.eu/components#> .
+@prefix loket:   <http://lblod.data.gift/shapes/loket-error-alert-service/> .
+@prefix rdfc:    <https://w3id.org/rdf-connect#> .
+@prefix rdfs:    <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh:      <http://www.w3.org/ns/shacl#> .
+@prefix sw:      <https://semantic.works/services/> .
+@prefix tcs:     <https://w3id.org/toolchain#> .
+@prefix xsd:     <http://www.w3.org/2001/XMLSchema#> .
+
+
+elody:AlertVisualisation a tcs:PipelineComponent, dcat:Resource ;
+    rdfs:label "Alert visualisation (Elody)" ;
+    rdfs:description "Renders oslc:Error alerts read from the central store as a SHACL-driven dashboard: an overview list and a detail view per alert. The UI is generated from the shape, so the alert contract is the only thing it is configured against." ;
+    dcat:landingPage <https://docs.elody.eu/> ;
+    # reads the store, like every semantic.works service here; nothing to
+    # install, so no spdx:Package and no owl:imports
+    dct:requires sw:triple-store ;
+    dcat:qualifiedRelation [
+        a dcat:Relationship ;
+        dcat:hadRole tcs:inputShape ;
+        dct:relation loket:ErrorShape
+    ] , [
+        a dcat:Relationship ;
+        dcat:hadRole tcs:configShape ;
+        dct:relation [
+            a sh:NodeShape ;
+            sh:message "Checks that the alert visualisation's wiring (alerts reader, endpoint, named graph) is well-typed." ;
+            sh:property [
+                sh:path elody:sparqlEndpoint ;
+                sh:name "sparqlEndpoint" ;
+                sh:description "SPARQL endpoint the alerts are read from." ;
+                sh:datatype xsd:string ;
+                sh:minCount 1 ;
+                sh:maxCount 1
+            ] , [
+                sh:path elody:namedGraph ;
+                sh:name "namedGraph" ;
+                sh:description "Named graph the oslc:Error alerts live in." ;
+                sh:datatype xsd:string ;
+                sh:minCount 1 ;
+                sh:maxCount 1
+            ] , [
+                sh:path rdfc:alerts ;
+                sh:name "alerts" ;
+                sh:description "The connectable input port. The flow itself is implicit, through the store." ;
+                sh:class rdfc:Reader ;
+                sh:minCount 1 ;
+                sh:maxCount 1
+            ]
+        ]
+    ] , [
+        # the minimal thing a pipeline definer has to say: which graph the
+        # alerts are in. The endpoint is the stack's own store, and the reader
+        # port is wiring -- both are filled in by the unwrap query.
+        a dcat:Relationship ;
+        dcat:hadRole tcs:wrappedConfigShape ;
+        dct:relation [
+            a sh:NodeShape ;
+            sh:property [
+                sh:path elody:namedGraph ;
+                sh:name "namedGraph" ;
+                sh:datatype xsd:string ;
+                sh:minCount 1 ;
+                sh:maxCount 1
+            ]
+        ]
+    ] ;
+    tcs:unwrapConfig "CONSTRUCT ...." .
+
+# Catalog membership. Same subject as main.ttl's, so the two documents union
+# into one catalog rather than two.
+:DishacledCatalog a tcs:Catalog, dcat:Catalog ;
+    dcat:resource elody:AlertVisualisation .

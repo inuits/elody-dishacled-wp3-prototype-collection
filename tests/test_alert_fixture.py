@@ -141,22 +141,27 @@ class TestAlertContract:
         assert store.input_shape is None
         assert store.config_shape is None
 
-    def test_overlaid_components_declare_a_landing_page(self, catalog):
-        """The two real repositories point at themselves; the store does not."""
-        assert catalog.get(THRESHOLD_MONITOR).landing_page == (
-            "https://github.com/rdf-connect/threshhold-monitor-processor"
-        )
+    def test_an_overlaid_component_declares_a_landing_page(self, catalog):
+        """A repository that discovery does find points at itself."""
         assert catalog.get(SPARQL_INGEST).landing_page == (
             "https://github.com/rdf-connect/sparql-ingest-processor-ts"
         )
         assert catalog.get(ALERT_STORE).landing_page is None
 
-    def test_overlaid_components_carry_no_deployment_coordinates(self, catalog):
+    def test_an_overlaid_component_carries_no_deployment_coordinates(self, catalog):
         """An empty deployment is what lets the repository's own manifest win."""
-        for iri in (THRESHOLD_MONITOR, SPARQL_INGEST):
-            deployment = catalog.get(iri).deployment
-            assert deployment.packages == ()
-            assert deployment.imports == ()
+        deployment = catalog.get(SPARQL_INGEST).deployment
+        assert deployment.packages == ()
+        assert deployment.imports == ()
+
+    def test_the_monitor_is_described_in_full_instead(self, catalog):
+        """Discovery does not return its repository (no `rdfc-processor`
+        topic), so an overlay waiting for one describes nothing. See
+        tests/test_alert_producer.py."""
+        monitor = catalog.get(THRESHOLD_MONITOR)
+        assert monitor.landing_page is None
+        assert monitor.config_shape is not None
+        assert monitor.deployment.packages
 
 
 class TestAlertData:

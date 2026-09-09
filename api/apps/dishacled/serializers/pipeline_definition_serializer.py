@@ -51,6 +51,8 @@ from apps.dishacled.pipeline.connections import (
 from apps.dishacled.serializers.component_catalog_serializer import (
     ComponentCatalogSerializer,
     add_identifier,
+    bind_used_namespaces,
+    normalise_iri_datatypes,
 )
 from apps.dishacled.serializers.pipeline_ttl_serializer import (
     _ShapeIndex,
@@ -132,6 +134,13 @@ class PipelineDefinitionSerializer:
         g.bind("p-plan", PPLAN)
         g.bind("sh", SH)
         g.bind("pipeline", Namespace(self.pipeline_namespace))
+        # The generator compacts an IRI and interpolates the CURIE into SPARQL,
+        # so `pipeline:<id>/step/<slug>` -- which is what a step compacts to
+        # with only the parent bound -- is a query that does not parse. Giving
+        # the step and channel namespaces prefixes of their own leaves every
+        # IRI in the document compacting to a legal CURIE.
+        g.bind("channel", Namespace(self.base_uri))
+        g.bind("step", Namespace(self.base_uri + "step/"))
 
         pipeline_uri = self.pipeline_uri
         g.add((pipeline_uri, RDF.type, TCS.PipelineDefinition))
@@ -145,6 +154,11 @@ class PipelineDefinitionSerializer:
         has_dataset = bool(datasets)
         if self.include_catalog:
             self._emit_catalog(g, steps, datasets)
+
+        # every namespace the document mentions gets a prefix: the generator
+        # compacts IRIs into SPARQL, and an unbound one lands there bare
+        normalise_iri_datatypes(g)
+        bind_used_namespaces(g, skip=self.pipeline_namespace)
 
         body = g.serialize(format="turtle")
         header = HEADER + (DATASET_NOTE if has_dataset else "")

@@ -40,7 +40,12 @@ DCT = Namespace("http://purl.org/dc/terms/")
 OWL = Namespace("http://www.w3.org/2002/07/owl#")
 SPDX = Namespace("http://spdx.org/rdf/terms#")
 PROV = Namespace("http://www.w3.org/ns/prov#")
+SH = Namespace("http://www.w3.org/ns/shacl#")
 PPLAN = Namespace("http://purl.org/net/p-plan#")
+
+# Elody's own catalog resource, the one its component descriptions
+# register into (`CATALOG_IRI`).
+ELODY_CATALOG = URIRef("https://elody.eu/catalog#ElodyCatalog")
 EX = Namespace("http://example.org/example/")
 
 BASE = "https://elody.local/pipelines/pipeline-1/"
@@ -240,7 +245,10 @@ CONNECTED = [
     },
 ]
 
-CHANNEL = URIRef(BASE + "http-poller-writer-to-log-processor-reader")
+# One channel per producing port (`connections.channel_name_between`): every
+# consumer of that port reads the same one, which is what keeps fan-out from
+# renaming a channel out from under an existing consumer.
+CHANNEL = URIRef(BASE + "http-poller-writer-channel")
 POLLER_STEP = URIRef(BASE + "step/http-poller")
 LOGGER_STEP = URIRef(BASE + "step/log-processor")
 
@@ -253,6 +261,17 @@ def serialize(relations=None, components=None, **kwargs):
     graph = Graph()
     graph.parse(data=ttl, format="turtle")
     return graph
+
+
+@pytest.fixture(autouse=True)
+def default_catalog_iri(monkeypatch):
+    """The fragment's catalog is the built-in one unless a test says otherwise.
+
+    `CATALOG_IRI` is configured in a deployed environment, and the suite runs
+    inside the container too, so what these tests assert has to be the default
+    rather than whatever that environment happens to point at.
+    """
+    monkeypatch.delenv("CATALOG_IRI", raising=False)
 
 
 @pytest.fixture
@@ -451,6 +470,24 @@ class TestCatalogFragment:
         }
         assert TCS.configShape in roles
 
+    def test_the_component_is_registered_in_a_catalog(self, graph):
+        # `tcs:SpecializedComponentIsCatalogedShape` in the toolchain's
+        # application profile: the component a step specialises has to be a
+        # `dcat:resource` of some `tcs:Catalog`. Declaring the component
+        # without saying whose catalog it is in is a profile violation on every
+        # Elody-only step, so the fragment says it -- and says it through the
+        # same serializer the published catalog graph uses, so the two agree.
+        assert (ELODY_CATALOG, RDF.type, TCS.Catalog) in graph
+        assert (ELODY_CATALOG, DCAT.resource, RDFC.HttpPoller) in graph
+
+    def test_the_catalog_registration_goes_with_the_fragment(self):
+        # it describes the component, not the pipeline: a definition that names
+        # components by IRI alone leaves the cataloguing to whoever holds the
+        # catalog
+        graph = serialize(include_catalog=False)
+
+        assert (ELODY_CATALOG, None, None) not in graph
+
     def test_the_catalog_fragment_can_be_left_out(self):
         graph = serialize(include_catalog=False)
         assert (RDFC.HttpPoller, RDF.type, TCS.PipelineComponent) not in graph
@@ -565,6 +602,128 @@ class TestEmptyPipeline:
     def test_a_pipeline_without_processors_still_serializes(self):
         graph = serialize([])
         assert (PIPELINE_URI, RDF.type, TCS.PipelineDefinition) in graph
+
+
+class TestIriValuedParameters:
+    """The fragment and the values it describes have to say the same thing.
+
+    `xsd:iri` is how a processor declares an IRI-valued parameter; the
+    toolchain's own catalog restates it as `sh:nodeKind sh:IRI` plus
+    `tcs:upstreamDatatype`. Emitting the raw form in our fragment while writing
+    the value as an IRI (or the other way round) makes the generator's
+    validation report contradict itself -- it flagged one or the other on every
+    run until both sides were spelled the toolchain's way.
+    """
+
+    IRI_SHAPE = """
+@prefix rdfc: <https://w3id.org/rdf-connect#>.
+@prefix sh: <http://www.w3.org/ns/shacl#>.
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#>.
+rdfc:Tagger rdfc:jsImplementationOf rdfc:Processor.
+[] a sh:NodeShape ; sh:targetClass rdfc:Tagger ;
+  sh:property [ sh:path rdfc:tag ; sh:name "tag" ; sh:datatype xsd:iri ] .
+"""
+
+    def _graph(self):
+        component = {
+            "_id": "acme--tagger",
+            "type": "githubProcessor",
+            "metadata": [
+                {"key": "name", "value": "Tagger"},
+                {"key": "runtime", "value": "ts"},
+            ],
+            "data": {
+                "componentIri": "https://w3id.org/rdf-connect#Tagger",
+                "componentKind": "component",
+                "rawTtl": self.IRI_SHAPE,
+                "properties": [],
+            },
+        }
+        pipeline = make_pipeline(
+            [
+                {
+                    "key": "acme--tagger",
+                    "type": "hasProcessor",
+                    "metadata": [{"key": "tag", "value": "http://example.org/t#a"}],
+                }
+            ]
+        )
+        ttl = PipelineDefinitionSerializer(base_uri=BASE).serialize(
+            pipeline, {"acme--tagger": component}
+        )
+        graph = Graph()
+        graph.parse(data=ttl, format="turtle")
+        return graph
+
+    def test_the_value_is_an_iri(self):
+        graph = self._graph()
+        values = list(graph.objects(None, RDFC.tag))
+        assert values == [URIRef("http://example.org/t#a")]
+
+    def test_the_shape_says_node_kind_iri(self):
+        graph = self._graph()
+        assert (None, SH.nodeKind, SH.IRI) in graph
+        assert list(graph.triples((None, SH.datatype, XSD.iri))) == []
+
+    def test_the_original_datatype_is_recorded(self):
+        """So a reader can still tell what the processor's own file said."""
+        graph = self._graph()
+        assert (None, TCS.upstreamDatatype, XSD.iri) in graph
+
+
+class TestPrefixes:
+    """Every namespace the document uses has to be bound.
+
+    The generator compacts an IRI to a CURIE and interpolates the result into
+    SPARQL (`rdfine.GraphReader.select`); an unbound namespace comes back as a
+    bare `https://…#Thing` and the query does not parse. It surfaced on a
+    component that *references* something in a namespace of its own -- Elody's
+    alert visualisation requires the alert store -- and it stopped the whole
+    compile, not just that one triple.
+    """
+
+    def test_no_namespace_is_left_unbound(self):
+        ttl = PipelineDefinitionSerializer(base_uri=BASE).serialize(
+            make_pipeline(CONNECTED), COMPONENTS
+        )
+        graph = Graph()
+        graph.parse(data=ttl, format="turtle")
+        bound = {str(namespace) for _, namespace in graph.namespaces()}
+        for term in set(graph.all_nodes()) | set(graph.predicates()):
+            if not isinstance(term, URIRef):
+                continue
+            text = str(term)
+            if text.startswith(BASE) or text.startswith("file://"):
+                # the pipeline's own steps and channels, and the relative
+                # `owl:imports` this re-parse just resolved against the cwd
+                continue
+            cut = max(text.rfind("#"), text.rfind("/"))
+            if cut < 0:
+                continue
+            assert text[: cut + 1] in bound, text
+
+    def test_a_referenced_namespace_of_its_own_is_bound_too(self):
+        """The case that broke: a `dct:requires` into a foreign namespace."""
+        component = dict(POLLER)
+        component["data"] = dict(POLLER["data"])
+        component["data"]["requires"] = ["https://elody.local/other#Store"]
+        component["data"]["runnable"] = False
+        ttl = PipelineDefinitionSerializer(base_uri=BASE).serialize(
+            make_pipeline(CONNECTED), {**COMPONENTS, POLLER["_id"]: component}
+        )
+        graph = Graph()
+        graph.parse(data=ttl, format="turtle")
+        assert URIRef("https://elody.local/other#Store") in set(graph.all_nodes())
+        assert "https://elody.local/other#" in {
+            str(namespace) for _, namespace in graph.namespaces()
+        }
+
+    def test_a_relative_import_is_left_alone(self):
+        """It is a path, not a namespace: prefixing it would relocate it."""
+        ttl = PipelineDefinitionSerializer(base_uri=BASE).serialize(
+            make_pipeline(CONNECTED), COMPONENTS
+        )
+        assert "<./node_modules/@acme/http-poller/processors.ttl>" in ttl
 
 
 class TestProvenanceHeader:

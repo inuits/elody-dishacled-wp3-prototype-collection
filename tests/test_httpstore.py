@@ -617,6 +617,77 @@ class TestDeploymentCoordinates:
         assert item["data"]["rawTtl"] == UNCONTRACTED_TTL
 
 
+class TestAPipelineNamedTwice:
+    """One pipeline, several identifiers, each component listed once.
+
+    An entity's `identifiers` are its uuid *and* its IRI, and the panel's
+    `$parentIds` filter passes both -- a relation may be stored under either.
+    Resolving the pipeline's components once per identifier returned each of
+    them twice: the listing deduplicated the rows (its identifiers are the same
+    document id) but the count did not, so a six-component pipeline reported
+    twelve. The GraphQL layer then dedupes the results too, which is why the
+    rows looked right and only the number was wrong.
+    """
+
+    UUID = "20cc1dc3-7e05-4c6f-8772-5704c5f608d9"
+    IRI = f"http://collection-api.localhost:8000/pipelines/{UUID}"
+    KEYS = ["local--threshold-monitor-js", "local--alert-visualisation"]
+
+    def store(self, monkeypatch):
+        store = DishacledHttpStorageManager()
+        store.session = MagicMock()
+        # both identifiers name the same pipeline, so both resolve to its keys
+        monkeypatch.setattr(
+            store, "_pipeline_processor_keys", lambda pipeline_id: list(self.KEYS)
+        )
+        return store
+
+    def test_each_component_is_counted_once(self, monkeypatch):
+        store = self.store(monkeypatch)
+
+        result = store.get_items_from_collection(
+            "githubProcessors",
+            filters={"related_to_pipeline": [self.UUID, self.IRI]},
+        )
+
+        assert [item["_id"] for item in result["results"]] == self.KEYS
+        assert result["count"] == len(self.KEYS)
+
+    def test_one_identifier_gives_the_same_answer(self, monkeypatch):
+        store = self.store(monkeypatch)
+
+        result = store.get_items_from_collection(
+            "githubProcessors", filters={"related_to_pipeline": [self.UUID]}
+        )
+
+        assert [item["_id"] for item in result["results"]] == self.KEYS
+        assert result["count"] == len(self.KEYS)
+
+    def test_a_repeated_identifier_is_looked_up_once(self, monkeypatch):
+        """Not only the count: the duplicate was a second round of lookups.
+
+        Every component in the panel was fetched twice, and for a component
+        discovered on GitHub that is a second set of API calls.
+        """
+        store = DishacledHttpStorageManager()
+        store.session = MagicMock()
+        looked_up = []
+        original = store.get_item_from_collection_by_id
+
+        def counting(collection, identifier):
+            looked_up.append(identifier)
+            return original(collection, identifier)
+
+        monkeypatch.setattr(store, "get_item_from_collection_by_id", counting)
+
+        store.get_items_from_collection(
+            "githubProcessors",
+            filters={"identifiers": ["local--alert-visualisation"] * 3},
+        )
+
+        assert looked_up == ["local--alert-visualisation"]
+
+
 class TestOverlayComponentsAreNotListedLocally:
     """A catalog entry that only adds shapes to a GitHub repository must not
     also appear as a local component -- that would list the same thing twice."""
@@ -626,8 +697,13 @@ class TestOverlayComponentsAreNotListedLocally:
 
     def test_overlaid_components_are_absent_from_the_listing(self):
         ids = {d["_id"] for d in self.source().list_documents()}
-        assert "local--threshold-monitor-js" not in ids
         assert "local--sparql-ingest" not in ids
+
+    def test_a_component_the_catalog_fully_describes_is_listed(self):
+        """The threshold monitor stopped being an overlay: discovery does not
+        return its repository, so this listing is its only way in."""
+        ids = {d["_id"] for d in self.source().list_documents()}
+        assert "local--threshold-monitor-js" in ids
 
     def test_overlaid_components_are_not_resolvable_by_local_id(self):
         assert self.source().get_document("local--sparql-ingest") is None

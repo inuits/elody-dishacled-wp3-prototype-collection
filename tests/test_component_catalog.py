@@ -50,7 +50,25 @@ OWL = Namespace("http://www.w3.org/2002/07/owl#")
 ENDPOINT = "http://triplestore.local:3030/store/data"
 QUERY_ENDPOINT = "http://triplestore.local:3030/store/sparql"
 CATALOG_GRAPH = "http://mu.semte.ch/graphs/catalog"
+# Elody's other base: a published definition carries the catalog fragment, so
+# these graphs describe components too -- and Elody wrote them.
+PIPELINE_GRAPH = "http://mu.semte.ch/graphs/pipeline-definitions"
 BASE_URI = "https://elody.local"
+
+# a source of data rather than a deployable component: no runner, no package,
+# and still a catalog member
+DATASET = {
+    "_id": "local--sensor-feed",
+    "type": "githubProcessor",
+    "metadata": [{"key": "name", "value": "Sensor feed"}],
+    "data": {
+        "componentIri": f"{DEMO}SensorFeedCm",
+        "componentKind": "dataset",
+        "outputShape": COMPONENTS["poller-cm"]["data"]["outputShape"],
+    },
+}
+
+ELODY_CATALOG = URIRef("https://elody.eu/catalog#ElodyCatalog")
 
 POLLER_IRI = URIRef(f"{DEMO}PollerCm")
 POLLER_GRAPH = f"{CATALOG_GRAPH}/{quote(str(POLLER_IRI), safe='')}"
@@ -115,11 +133,13 @@ def store(monkeypatch):
     monkeypatch.setenv("CATALOG_GSP_ENDPOINT", ENDPOINT)
     monkeypatch.setenv("CATALOG_SPARQL_ENDPOINT", QUERY_ENDPOINT)
     monkeypatch.setenv("CATALOG_GRAPH", CATALOG_GRAPH)
+    monkeypatch.setenv("PIPELINE_GRAPH", PIPELINE_GRAPH)
     for name in (
         "CATALOG_STORE_USER",
         "CATALOG_STORE_PASSWORD",
         "PIPELINE_STORE_USER",
         "PIPELINE_STORE_PASSWORD",
+        "CATALOG_IRI",
     ):
         # the suite also runs inside the container, where these are configured
         monkeypatch.delenv(name, raising=False)
@@ -251,17 +271,7 @@ class TestWhatIsPublished:
     def test_a_dataset_is_published_as_a_dataset(self, store):
         # a source of data, not a deployable component: calling it a
         # tcs:PipelineComponent would offer the generator a step it cannot start
-        dataset = {
-            "_id": "local--sensor-feed",
-            "type": "githubProcessor",
-            "metadata": [{"key": "name", "value": "Sensor feed"}],
-            "data": {
-                "componentIri": f"{DEMO}SensorFeedCm",
-                "componentKind": "dataset",
-                "outputShape": COMPONENTS["poller-cm"]["data"]["outputShape"],
-            },
-        }
-        assert catalog.publish_component(dataset) == catalog.PUBLISHED
+        assert catalog.publish_component(DATASET) == catalog.PUBLISHED
 
         iri = URIRef(f"{DEMO}SensorFeedCm")
         graph = published(store, f"{CATALOG_GRAPH}/{quote(str(iri), safe='')}")
@@ -277,6 +287,97 @@ class TestWhatIsPublished:
     def test_a_component_without_an_iri_is_not_published(self, store):
         assert catalog.publish_component({"_id": "x", "data": {}}) == catalog.SKIPPED
         assert store.calls == []
+
+
+class TestCatalogMembership:
+    """A published component says which catalog it belongs to.
+
+    The toolchain's application profile carries
+    `tcs:SpecializedComponentIsCatalogedShape`: the component a step
+    specialises has to be a `dcat:resource` of some `tcs:Catalog`. A
+    description that only declares `a tcs:PipelineComponent` therefore reads as
+    a component in no catalog at all, and every Elody-only step violates the
+    profile -- which is the difference between a definition the generator
+    compiles and one it rejects. So the description registers the component,
+    and does it here rather than in the export, because the published graph has
+    to stand on its own once the fragment goes away.
+
+    The catalog is Elody's own rather than one of the toolchain's. Writing into
+    a `tcs:Catalog` the toolchain owns would break the ownership rule
+    (`TestOwnership`) from the inside: a consumer could no longer tell which
+    catalog claims a component, which is the question precedence is decided on.
+    Which IRI it is stays configuration, since the demonstrator may want one
+    shared catalog subject across all the services.
+    """
+
+    def test_the_component_is_a_resource_of_a_catalog(self, store):
+        catalog.publish_component(POLLER_CM)
+        graph = published(store)
+
+        assert (ELODY_CATALOG, RDF.type, TCS.Catalog) in graph
+        assert (ELODY_CATALOG, DCAT.resource, POLLER_IRI) in graph
+
+    def test_the_catalog_iri_is_configuration(self, store, monkeypatch):
+        monkeypatch.setenv("CATALOG_IRI", "https://example.org/shared#Catalog")
+        catalog.publish_component(POLLER_CM)
+        graph = published(store)
+
+        shared = URIRef("https://example.org/shared#Catalog")
+        assert (shared, RDF.type, TCS.Catalog) in graph
+        assert (shared, DCAT.resource, POLLER_IRI) in graph
+        assert (ELODY_CATALOG, None, None) not in graph
+
+    def test_a_dataset_is_not_listed_as_a_catalog_resource(self, store):
+        # `tcs:CatalogShape` in the same application profile requires every
+        # dcat:resource of a tcs:Catalog to be a tcs:PipelineComponent, and a
+        # dataset deliberately is not one -- listing it would trade the
+        # violation this registration clears for a new one. It stays
+        # discoverable in the catalog graph by its own type.
+        assert catalog.publish_component(DATASET) == catalog.PUBLISHED
+
+        iri = URIRef(f"{DEMO}SensorFeedCm")
+        graph = published(store, f"{CATALOG_GRAPH}/{quote(str(iri), safe='')}")
+        assert (iri, RDF.type, DCAT.Dataset) in graph
+        assert (ELODY_CATALOG, DCAT.resource, iri) not in graph
+
+    def test_every_catalog_resource_is_a_pipeline_component(self, store):
+        # the invariant `tcs:CatalogShape` states, over everything a sweep
+        # publishes -- components and datasets together
+        catalog.publish_components([POLLER_CM, SINK_CM, DATASET, UNTYPED])
+
+        union = Graph()
+        for call in store.of("PUT"):
+            union += call.parsed()
+
+        listed = set(union.objects(ELODY_CATALOG, DCAT.resource))
+        assert listed
+        for resource in listed:
+            assert (resource, RDF.type, TCS.PipelineComponent) in union
+
+    def test_the_runner_is_not_claimed_as_a_catalog_member(self, store):
+        # the runner is emitted because a component requires it, not because
+        # Elody knows anything about it the toolchain's catalog does not; only
+        # what a step specialises needs cataloguing
+        catalog.publish_component(POLLER_CM)
+        graph = published(store)
+
+        assert (RDFC.NodeRunner, RDF.type, TCS.PipelineComponent) in graph
+        assert (ELODY_CATALOG, DCAT.resource, RDFC.NodeRunner) not in graph
+
+    def test_publishing_two_components_puts_both_in_the_one_catalog(self, store):
+        # the catalog subject is an IRI, not a blank node, so the per-component
+        # graphs union into one catalog with two members rather than into two
+        # catalogs -- which is what a consumer querying the members relies on
+        catalog.publish_components([POLLER_CM, SINK_CM])
+
+        union = Graph()
+        for call in store.of("PUT"):
+            union += call.parsed()
+
+        assert set(union.objects(ELODY_CATALOG, DCAT.resource)) == {
+            POLLER_IRI,
+            URIRef(f"{DEMO}SinkCm"),
+        }
 
 
 class TestOwnership:
@@ -304,6 +405,42 @@ class TestOwnership:
         # a dataset is described as a dcat:Dataset, and the question is whether
         # anything outside Elody's graphs describes this thing at all
         assert "tcs:PipelineComponent dcat:Dataset" in query
+
+    def test_a_published_definition_is_not_somebody_else(self, store):
+        """Elody's own definition graphs carry the catalog fragment.
+
+        `DEFINITION_INCLUDE_CATALOG` is on, so saving a pipeline writes a
+        description of every component it names into
+        `<PIPELINE_GRAPH>/<id>`. Asking "is this described outside my catalog
+        graphs?" then answers yes about Elody's own writing -- so the first
+        save made every component look like the toolchain's, publishing
+        stopped, and an existing Elody description was withdrawn. Which
+        components ended up in the catalog came down to the order pipelines
+        happened to be saved in.
+        """
+        catalog.publish_component(POLLER_CM)
+
+        query = store.queries[0]
+        assert f'STRSTARTS(STR(?g), "{PIPELINE_GRAPH}/")' in query
+
+    def test_every_base_elody_writes_is_excluded_from_the_check(
+        self, store, monkeypatch
+    ):
+        monkeypatch.setenv("CATALOG_GRAPH", "http://example.org/graphs/cat")
+        monkeypatch.setenv("PIPELINE_GRAPH", "http://example.org/graphs/pipe")
+        catalog.publish_component(POLLER_CM)
+
+        query = store.queries[-1]
+        assert 'STRSTARTS(STR(?g), "http://example.org/graphs/cat/")' in query
+        assert 'STRSTARTS(STR(?g), "http://example.org/graphs/pipe/")' in query
+
+    def test_the_definition_base_is_optional(self, store, monkeypatch):
+        """An environment publishing components but not definitions still works."""
+        monkeypatch.delenv("PIPELINE_GRAPH", raising=False)
+        assert catalog.publish_component(POLLER_CM) == catalog.PUBLISHED
+        query = store.queries[-1]
+        assert f'STRSTARTS(STR(?g), "{CATALOG_GRAPH}/")' in query
+        assert "pipeline-definitions" not in query
 
     def test_without_a_query_endpoint_the_component_is_published(
         self, store, monkeypatch

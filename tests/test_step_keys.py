@@ -31,6 +31,25 @@ from apps.dishacled.storage.dishacled_httpstore import DishacledHttpStorageManag
 
 from tests.test_step_instances import COMPONENTS, LOGGER, TICKER, LOGGER_TTL
 from rdflib import Graph
+def _step_slugs(ttl: str) -> set[str]:
+    """The step IRIs a definition declares, by their last path segment.
+
+    Read off the parsed graph rather than the text: a step compacts to
+    `step:<slug>` now that the document binds a prefix for the step namespace
+    (the generator interpolates compacted IRIs into SPARQL, so they have to be
+    legal CURIEs), and what these tests are about is which steps exist.
+    """
+    from rdflib import Graph, URIRef
+    from rdflib.namespace import RDF
+
+    graph = Graph()
+    graph.parse(data=ttl, format="turtle")
+    return {
+        str(step).rsplit("/", 1)[-1]
+        for step in graph.subjects(
+            RDF.type, URIRef("https://w3id.org/toolchain#InstancePipelineComponent")
+        )
+    }
 
 
 QUALIFIED = f"{LOGGER}{INSTANCE_SEPARATOR}logprocessorjs-2"
@@ -212,7 +231,7 @@ class TestTheStoredPipelineUsesStepKeys:
         ttl = PipelineDefinitionSerializer(
             base_uri="http://elody.local/pipelines/pipeline-1/"
         ).serialize(entity, components)
-        assert "step/logprocessorjs>" in ttl and "step/logprocessorjs-2>" in ttl
+        assert {"logprocessorjs", "logprocessorjs-2"} <= _step_slugs(ttl)
         assert '"report"' in ttl and '"output"' in ttl
 
     def test_the_catalog_fragment_names_the_component_not_the_step(self):

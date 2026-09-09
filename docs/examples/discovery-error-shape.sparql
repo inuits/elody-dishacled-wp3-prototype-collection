@@ -1,0 +1,57 @@
+# Step 3 discovery: which components can consume the alert data?
+#
+# The shape-guided search of the demonstrator script, asked of the catalog
+# rather than of a component list: give me everything whose *input* contract is
+# the alert shape. Elody's alert visualisation answers it, which is the whole
+# point of registering it as a component -- before that, a discovery service
+# reading the catalog had no way to know Elody could consume an oslc:Error.
+#
+# Run it against the catalog graph (`CATALOG_GRAPH`, see
+# docs/component-catalog.md) or against a single catalog document. It reads the
+# discovery specification's role-bearing form (2.2) and accepts
+# `dcterms:conformsTo` in the same position, the way Elody's own reader does.
+#
+#   arq --data api/apps/dishacled/shacl/catalog/contracts.ttl \
+#       --query docs/examples/discovery-error-shape.sparql
+#
+# Verified against the running store on 2026-09-07: it returns the Elody
+# visualisation alongside loket's error alert service and sparql-ingest, the
+# other two components whose input contract is the alert shape.
+#
+# Swap the shape IRI for the demonstrator's own
+# (loket:ErrorShape, .../shapes/loket-error-alert-service/ErrorShape) when
+# querying their catalog -- see demonstrator-elody.ttl.
+
+PREFIX dcat: <http://www.w3.org/ns/dcat#>
+PREFIX dct:  <http://purl.org/dc/terms/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX tcs:  <https://w3id.org/toolchain#>
+
+SELECT DISTINCT ?component ?label
+WHERE {
+  # The same pattern twice, once per place a catalog can live: a catalog
+  # *document* puts everything in the default graph, while the store keeps one
+  # named graph per component. Spelled out rather than factored, because every
+  # triple of the pattern has to sit inside the same graph clause -- the role
+  # and the shape are in the component's graph too, not beside it.
+  {
+    ?component a tcs:PipelineComponent ;
+               dcat:qualifiedRelation ?relation .
+    ?relation dcat:hadRole tcs:inputShape ;
+              ?link <http://lblod.data.gift/shapes/ErrorShape> .
+    FILTER(?link IN (dct:relation, dct:conformsTo))
+    OPTIONAL { ?component rdfs:label ?label }
+  }
+  UNION
+  {
+    GRAPH ?g {
+      ?component a tcs:PipelineComponent ;
+                 dcat:qualifiedRelation ?relation .
+      ?relation dcat:hadRole tcs:inputShape ;
+                ?link <http://lblod.data.gift/shapes/ErrorShape> .
+      FILTER(?link IN (dct:relation, dct:conformsTo))
+      OPTIONAL { ?component rdfs:label ?label }
+    }
+  }
+}
+ORDER BY ?component

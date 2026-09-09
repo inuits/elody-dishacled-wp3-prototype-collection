@@ -1,0 +1,57 @@
+# Elody as the last step of the demonstrator pipeline, for
+# DiSHACLed/demonstrator@proposal
+#
+#     append to pipelines/final-valid/scenario-a.ttl
+#     (and to scenario-b.ttl, which continues the same tail)
+#
+# The alert-producing side already ends in the store: the threshold monitor
+# writes `oslc:Error` alerts, `sw:loket-error-alert-service` reads them back out
+# and turns them into an email. Elody hangs off the same producer -- a second
+# consumer of the same alerts, not a stage after the email -- so the monitor
+# fans out, and the demonstrator's story runs API -> monitor -> store -> email
+# *and* -> Elody dashboard.
+#
+# The connection is logical, in the `tcs:Connection` sense of extensions.md:
+# there is no direct flow between the monitor and Elody. Both talk to the
+# central store, so the arrow is an implicit information flow and validation
+# only has to check that the two ends agree on the contract -- which they do,
+# `loket:ErrorShape` on the monitor's output and on Elody's input.
+#
+# The `tcs:inputShape` annotation on the instance is not required (the
+# component's contract is fixed and config-independent, so the validator can
+# read it from the catalog); it is written down because the demo is read out
+# loud, and a definer's annotation is verified rather than trusted.
+
+@prefix :        <http://example.org/example/> .
+@prefix dcat:    <http://www.w3.org/ns/dcat#> .
+@prefix demo:    <http://example.org/example/demonstrator/> .
+@prefix dct:     <http://purl.org/dc/terms/> .
+@prefix elody:   <https://elody.eu/components#> .
+@prefix loket:   <http://lblod.data.gift/shapes/loket-error-alert-service/> .
+@prefix p-plan:  <http://purl.org/net/p-plan#> .
+@prefix prov:    <http://www.w3.org/ns/prov#> .
+@prefix rdfs:    <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix tcs:     <https://w3id.org/toolchain#> .
+
+
+demo:ElodyAlertDashboard a tcs:InstancePipelineComponent ;
+    prov:specializationOf elody:AlertVisualisation ;
+    p-plan:isStepOfPlan demo:DishacledPipeline ;
+    rdfs:label "Alert dashboard (Elody)" ;
+    p-plan:hasInputVar [
+        a tcs:WrappedPipelineConfig ;
+        tcs:embedded [
+            elody:namedGraph "http://mu.semte.ch/graphs/errors"
+        ]
+    ] ;
+    dcat:qualifiedRelation [
+        a dcat:Relationship ;
+        dcat:hadRole tcs:inputShape ;
+        dct:relation loket:ErrorShape
+    ] .
+
+[
+    a tcs:Connection ;
+    tcs:from demo:ThresholdMonitor ;
+    tcs:to demo:ElodyAlertDashboard
+] .

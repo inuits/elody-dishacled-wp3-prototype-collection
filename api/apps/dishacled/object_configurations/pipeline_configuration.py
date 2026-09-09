@@ -2,6 +2,7 @@ from logging import getLogger
 from os import getenv
 
 from apps.dishacled.pipeline.connections import (
+    assign_step_instances,
     autoconnect_new_relations,
     split_component_key,
 )
@@ -82,6 +83,18 @@ class PipelineConfiguration(ElodyConfiguration):
             crud=crud, unpatched_document=unpatched_document, **kwargs
         )
         if document and crud in ("create", "update"):
+            # A step of a repeated component gets an identity of its own before
+            # anything downstream sees the document. Not a convenience: two
+            # uses of one component are identical relations until one is
+            # configured, and a store keeps one of two identical entries --
+            # the second step was lost on the way in. This is the layer that
+            # knows a relation is a step, so it is the layer that says which.
+            try:
+                assign_step_instances(
+                    document.get("relations") or [], self.__components_of(document)
+                )
+            except Exception:
+                log.exception("Step identities not assigned")
             # never fail the save over a convenience: an unreachable component
             # catalog just means the user connects by hand, as before
             try:
@@ -93,6 +106,59 @@ class PipelineConfiguration(ElodyConfiguration):
             except Exception:
                 log.exception("Auto-connect skipped")
         return document
+
+    def identify_sub_items(self, *, sub_item, existing, content):
+        """What tells two of a pipeline's relations apart, for the store.
+
+        The engine treats equal entries as one entry, which is right for a
+        retried add and wrong for a step: a step is a *use* of a component, so
+        two uses of one component are identical relations until one of them is
+        configured. The framework adds a new document's relations in a write of
+        their own, which runs no crud hook, so this is where a step being added
+        gets the identity `_pre_crud_hook` gives it on a save.
+
+        Existing entries are handed over too, and are identified along with the
+        new ones: whichever of them is repeated has to say which step it is,
+        and the answer has to be the same for all of them.
+        """
+        if sub_item != "relations":
+            return content
+        combined = [*(existing or []), *(content or [])]
+        try:
+            assign_step_instances(
+                combined, self.__components_of({"relations": combined})
+            )
+        except Exception:
+            log.exception("Step identities not assigned")
+        return combined[len(existing or []) :]
+
+    @staticmethod
+    def __components_of(document):
+        """The component behind each `hasProcessor` relation, by relation key.
+
+        Addressed by *component* id rather than by the relation's key, because
+        a step-keyed lookup answers with the step's own name ("... (step-2)",
+        `storage/dishacled_httpstore.py::_as_step`) and a step id derived from
+        that would carry the previous one inside it.
+        """
+        from configuration import get_storage_mapper
+
+        storage = get_storage_mapper().get("http")()
+        components = {}
+        for relation in document.get("relations") or []:
+            key = relation.get("key")
+            if not key or relation.get("type") != "hasProcessor":
+                continue
+            component_id, _ = split_component_key(key)
+            try:
+                component = storage.get_item_from_collection_by_id(
+                    "githubProcessors", component_id or key
+                )
+            except Exception:
+                component = None
+            if component:
+                components[key] = component
+        return components
 
     @staticmethod
     def __ports_of(relation_key):

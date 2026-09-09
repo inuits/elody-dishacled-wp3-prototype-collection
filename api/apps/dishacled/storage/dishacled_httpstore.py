@@ -326,11 +326,19 @@ class DishacledHttpStorageManager(HttpStorageManager):
         return headers
 
     def _get_items_by_identifiers(self, collection, identifiers, skip, limit):
-        """The components these ids name, in the order they were asked for.
+        """The components these ids name, once each, in the order asked for.
 
         This is what a pipeline's processor panel calls -- one lookup per step,
         each of them a handful of GitHub calls -- so they run together.
+
+        Deduplicated, because the same component can be named twice in one
+        request and it is still one component: an entity's `identifiers` are
+        its uuid *and* its IRI, and the panel's `$parentIds` filter passes
+        both, so "the components of this pipeline" used to be resolved once per
+        identifier. That doubled the count the panel displays (six components
+        reported as twelve) and doubled the lookups behind it.
         """
+        identifiers = list(dict.fromkeys(identifiers or []))
         results = [
             item
             for item in _in_parallel(
@@ -416,7 +424,9 @@ class DishacledHttpStorageManager(HttpStorageManager):
             keys = []
             for pid in related_pipeline_ids:
                 keys.extend(self._pipeline_processor_keys(pid))
-            identifiers = keys
+            # several identifiers may name one pipeline (uuid and IRI), and a
+            # step key can only appear once in it either way
+            identifiers = list(dict.fromkeys(keys))
 
         # Suggestions cover fan-out: a component is suggested when its input
         # shape matches the output of ANY component already in the pipeline —
@@ -447,6 +457,9 @@ class DishacledHttpStorageManager(HttpStorageManager):
             for key in keys:
                 component_id, _ = split_component_key(key)
                 components.append(component_id or key)
+            # same pipeline named twice, and two steps of one component: the
+            # union of output shapes is over components, not over mentions
+            components = list(dict.fromkeys(components))
             if components:
                 compat_shapes = self._output_shapes_of(collection, components)
                 hard_suggest = not extra_query

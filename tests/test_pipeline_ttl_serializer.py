@@ -560,21 +560,28 @@ class TestConnections:
         },
     ]
 
+    # The channel is named after the producing step and its port -- one
+    # channel per output port, so a second consumer can read the same one
+    # (`connections.channel_name_between`).
+    CHANNEL = URIRef(BASE + "ldes-client-writer-channel")
+
     def test_producer_writes_to_the_connection_channel(self):
         g = self._graph(self.CONNECTED)
-        channel = URIRef(BASE + "ldes-client-writer-to-log-processor-ts-reader")
-        assert g.value(URIRef(BASE + "ldes-client"), RDFC.writer) == channel
+        assert g.value(URIRef(BASE + "ldes-client"), RDFC.writer) == self.CHANNEL
 
     def test_consumer_reads_from_the_same_channel(self):
         g = self._graph(self.CONNECTED)
-        channel = URIRef(BASE + "ldes-client-writer-to-log-processor-ts-reader")
-        assert g.value(URIRef(BASE + "log-processor-ts"), RDFC.reader) == channel
+        # the same channel the producer writes to, whatever it is called
+        producer_channel = g.value(URIRef(BASE + "ldes-client"), RDFC.writer)
+        assert g.value(URIRef(BASE + "log-processor-ts"), RDFC.reader) == (
+            producer_channel
+        )
+        assert producer_channel == self.CHANNEL
 
     def test_connection_channel_is_declared(self):
         g = self._graph(self.CONNECTED)
-        channel = URIRef(BASE + "ldes-client-writer-to-log-processor-ts-reader")
-        assert (channel, RDF.type, RDFC.Reader) in g
-        assert (channel, RDF.type, RDFC.Writer) in g
+        assert (self.CHANNEL, RDF.type, RDFC.Reader) in g
+        assert (self.CHANNEL, RDF.type, RDFC.Writer) in g
 
     def test_an_explicit_channel_name_is_used(self):
         relations = [
@@ -618,7 +625,7 @@ class TestConnections:
         g = self._graph(relations)
         stage = URIRef(BASE + "ldes-client")
         assert list(g.objects(stage, RDFC.writer)) == [
-            URIRef(BASE + "ldes-client-writer-to-log-processor-ts-reader")
+            URIRef(BASE + "ldes-client-writer-channel")
         ]
 
     def test_config_values_survive_a_connection(self):
@@ -704,19 +711,20 @@ class TestDatasetSource:
         )
         return g
 
+    DATASET_CHANNEL = URIRef(BASE + "sensor-feed-cm-output-channel")
+
     def test_dataset_stage_writes_to_the_connection_channel(self):
         g = self._graph()
-        channel = URIRef(
-            BASE + "sensor-feed-cm-output-to-log-processor-ts-reader"
+        assert g.value(URIRef(BASE + "sensor-feed-cm"), RDFC.output) == (
+            self.DATASET_CHANNEL
         )
-        assert g.value(URIRef(BASE + "sensor-feed-cm"), RDFC.output) == channel
 
     def test_consumer_reads_the_dataset_channel(self):
         g = self._graph()
-        channel = URIRef(
-            BASE + "sensor-feed-cm-output-to-log-processor-ts-reader"
+        # a dataset is a producer like any other: one channel for its output
+        assert g.value(URIRef(BASE + "log-processor-ts"), RDFC.reader) == (
+            self.DATASET_CHANNEL
         )
-        assert g.value(URIRef(BASE + "log-processor-ts"), RDFC.reader) == channel
 
     def test_dataset_is_not_instantiated_as_a_runner_stage(self):
         g = self._graph()

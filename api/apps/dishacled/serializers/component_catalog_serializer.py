@@ -32,7 +32,12 @@ The vocabulary is the discovery spec's:
         owl:imports <./node_modules/...> ;
         dcat:qualifiedRelation [ a dcat:Relationship ;
             dcat:hadRole tcs:configShape ; dct:relation <shape> ] .
+
+    <catalog> a tcs:Catalog ; dcat:resource <component> .    # membership
 """
+
+import re
+from os import getenv
 
 from rdflib import BNode, Graph, Literal, Namespace, RDF, RDFS, URIRef
 
@@ -56,6 +61,31 @@ SH = Namespace("http://www.w3.org/ns/shacl#")
 # uses for a component's prose description, and rdflib's RDFS namespace is
 # closed, so it is built by IRI.
 RDFS_DESCRIPTION = URIRef("http://www.w3.org/2000/01/rdf-schema#description")
+
+# The `tcs:Catalog` Elody's component descriptions are members of.
+#
+# The toolchain's application profile carries
+# `tcs:SpecializedComponentIsCatalogedShape`: the component a step
+# `prov:specializationOf` names has to be a `dcat:resource` of some
+# `tcs:Catalog`. A description that says only `a tcs:PipelineComponent` is
+# therefore a component belonging to no catalog, and a definition built on it
+# violates the profile on every Elody-only step -- so the registration is part
+# of the description rather than something a reader is expected to add.
+#
+# It is *Elody's* catalog, not one of the toolchain's. The ownership rule
+# (`pipeline/catalog.py`) is that the toolchain catalog is authoritative for
+# what it carries and Elody only fills the gaps; adding resources to a
+# `tcs:Catalog` the toolchain owns would leave a consumer unable to tell which
+# catalog claims a component, which is the question precedence is settled on.
+# Configuration, because the demonstrator may well want one shared catalog
+# subject across its services -- point `CATALOG_IRI` at it and the graphs merge
+# into that one.
+DEFAULT_CATALOG_IRI = "https://elody.eu/catalog#ElodyCatalog"
+
+
+def catalog_iri() -> URIRef:
+    return URIRef(getenv("CATALOG_IRI", "").strip() or DEFAULT_CATALOG_IRI)
+
 
 # Role IRIs for the shapes attached to a catalog component. `tcs:configShape`
 # is the reference catalog's; the other two come from the contract model.
@@ -90,6 +120,86 @@ def bind_prefixes(graph: Graph) -> Graph:
     graph.bind("owl", OWL)
     graph.bind("spdx", SPDX)
     graph.bind("sh", SH)
+    return graph
+
+
+# What may follow a prefix: no slash, and not starting with a character a
+# CURIE cannot start with. Deliberately stricter than SPARQL's PN_LOCAL.
+_COMPACTS_CLEANLY = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*$")
+
+
+XSD_IRI = URIRef("http://www.w3.org/2001/XMLSchema#iri")
+
+
+def normalise_iri_datatypes(graph: Graph) -> Graph:
+    """`sh:datatype xsd:iri` -> `sh:nodeKind sh:IRI`, keeping the original.
+
+    `xsd:iri` is not a datatype; it is how the RDF-Connect processors say "an
+    IRI", and a value written under it is an IRI node rather than a literal
+    (`pipeline_ttl_serializer.XSD_IRI_NOTE`). The toolchain's harvested catalog
+    translates it exactly this way -- `sh:nodeKind sh:IRI ;
+    tcs:upstreamDatatype xsd:iri` (`data/catalog/catalog-rdfc.ttl`) -- so a
+    fragment that restates the raw form contradicts the value the definition
+    carries, and the generator's validation report flags one or the other
+    whichever way it is written.
+    """
+    for shape, _, _ in list(graph.triples((None, SH.datatype, XSD_IRI))):
+        graph.remove((shape, SH.datatype, XSD_IRI))
+        graph.add((shape, SH.nodeKind, SH.IRI))
+        graph.add((shape, TCS.upstreamDatatype, XSD_IRI))
+    return graph
+
+
+def bind_used_namespaces(graph: Graph, skip=None) -> Graph:
+    """Give every namespace the document actually uses a prefix.
+
+    Not cosmetic. The toolchain pipeline generator compacts an IRI to a CURIE
+    and interpolates the result straight into SPARQL
+    (`rdfine.GraphReader.select`, via rdflib's `normalizeUri`); an IRI in a
+    namespace the document does not bind comes back as a bare
+    `https://…#Thing`, unbracketed, and the query it lands in does not parse.
+    So a component Elody describes in a namespace of its own -- or one it
+    merely references, like the alert store -- has to arrive with a prefix.
+
+    Existing bindings win, and a namespace with no better name gets `nsN`,
+    which is what rdflib would have called it anyway.
+
+    `skip` is a prefix of IRIs to leave alone -- the document's own base, whose
+    steps and channels read better absolute and are already bound where it
+    matters.
+    """
+    bound = {str(namespace) for _, namespace in graph.namespaces()}
+    index = 0
+    for term in set(graph.all_nodes()) | set(graph.predicates()):
+        if not isinstance(term, URIRef):
+            continue
+        text = str(term)
+        if skip and text.startswith(str(skip)):
+            continue
+        if "://" not in text and not text.startswith("urn:"):
+            # A relative `owl:imports` (`./node_modules/...`) is deliberately
+            # relative -- the runner resolves it against wherever it mounts the
+            # pipeline -- and prefixing it would rewrite it into something that
+            # resolves somewhere else. Nothing to bind for it either: it is not
+            # in a namespace, it is a path.
+            continue
+        cut = max(text.rfind("#"), text.rfind("/"))
+        if cut < 0:
+            continue
+        namespace, local = text[: cut + 1], text[cut + 1 :]
+        if namespace in bound or not _COMPACTS_CLEANLY.match(local):
+            # A prefix only helps if the rest is a legal CURIE local name. The
+            # generator interpolates the compacted form into SPARQL, so
+            # `ns1:some/path` -- syntactically a CURIE with a slash in it --
+            # would be worse than leaving the IRI absolute.
+            continue
+        while True:
+            index += 1
+            prefix = f"ns{index}"
+            if prefix not in dict(graph.namespaces()):
+                break
+        graph.bind(prefix, Namespace(namespace))
+        bound.add(namespace)
     return graph
 
 
@@ -213,6 +323,7 @@ class ComponentCatalogSerializer:
 
         g.add((component, RDF.type, TCS.PipelineComponent))
         g.add((component, RDF.type, DCAT.Resource))
+        self._add_to_catalog(component)
         add_identifier(g, component, document)
 
         name = _get_metadata_value(document, "name")
@@ -226,9 +337,22 @@ class ComponentCatalogSerializer:
             g.add((component, DCAT.landingPage, Literal(url)))
 
         runtime = _get_metadata_value(document, "runtime")
-        runner = RUNTIME_TO_RUNNER.get(runtime, RDFC.NodeRunner)
-        g.add((component, DCT.requires, runner))
-        self._add_implementation(component, document, runtime)
+        if data.get("runnable") is False:
+            # A component the catalog describes but nothing installs: Elody's
+            # own alert visualisation, a semantic.works service, an LDIO
+            # component. It is a step of the pipeline all the same -- its
+            # contracts are what a connection into it is checked against -- but
+            # it is not an RDF-Connect processor, so claiming a runner and an
+            # implementation would offer the generator a step it cannot start.
+            # What it needs instead is whatever the catalog says it needs (the
+            # store it reads through, an orchestrator of its own framework).
+            runner = None
+            for required in data.get("requires") or []:
+                g.add((component, DCT.requires, URIRef(required)))
+        else:
+            runner = RUNTIME_TO_RUNNER.get(runtime, RDFC.NodeRunner)
+            g.add((component, DCT.requires, runner))
+            self._add_implementation(component, document, runtime)
 
         deployment = data.get("deployment") or {}
         imports = deployment.get("imports") or self._fallback_imports(document)
@@ -237,6 +361,8 @@ class ComponentCatalogSerializer:
 
         for package in deployment.get("packages") or []:
             self._add_package(component, package)
+
+        self._add_configs(component, data)
 
         self._add_shapes(component, document, shape)
         return runner
@@ -283,9 +409,51 @@ class ComponentCatalogSerializer:
             self.graph.add((runner, DCT.requires, RDFC.Orchestrator))
 
     def serialize(self) -> str:
+        normalise_iri_datatypes(self.graph)
+        bind_used_namespaces(self.graph)
         return self.graph.serialize(format="turtle")
 
     # -- the pieces --------------------------------------------------------
+
+    def _add_to_catalog(self, component):
+        """Make `component` a resource of Elody's catalog.
+
+        Components only, and that is not a judgement call: the same application
+        profile carries `tcs:CatalogShape`, which requires *every*
+        `dcat:resource` of a `tcs:Catalog` to be a `tcs:PipelineComponent`.
+        Listing a dataset -- which is deliberately not one, since the generator
+        cannot start it as a step -- would trade the violation this registration
+        clears for a new one. A dataset is still discoverable in the catalog
+        graph by its own type.
+
+        Runners are left out for a different reason: one is emitted because a
+        component requires it, nothing specialises a runner, and the toolchain's
+        catalog carries the runners itself -- so listing it here would be a
+        claim of ownership with nothing behind it.
+        """
+        catalog = catalog_iri()
+        self.graph.add((catalog, RDF.type, TCS.Catalog))
+        self.graph.add((catalog, DCAT.resource, component))
+
+    def _add_configs(self, component, data):
+        """How the component is deployed, as the catalog declares it.
+
+        `tcs:config` and the config nodes themselves, copied verbatim. The
+        application profile requires every `tcs:PipelineComponent` to reach a
+        `tcs:DockerComposeConfig` along `dct:requires*`, so a component that
+        has one and does not say so is a component the generator will not
+        compile ("PipelineComponent {?this} is not deployable").
+        """
+        config_ttl = data.get("configTtl")
+        if config_ttl:
+            configs = Graph()
+            try:
+                configs.parse(data=config_ttl, format="turtle")
+            except Exception:
+                configs = Graph()
+            self.graph += configs
+        for config in data.get("configs") or []:
+            self.graph.add((component, TCS.config, URIRef(config)))
 
     def _add_implementation(self, component, document, runtime):
         """`<component> rdfc:jsImplementationOf rdfc:Processor`, or nothing.

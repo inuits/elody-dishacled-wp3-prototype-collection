@@ -487,6 +487,53 @@ def instance_id_of(relation) -> str | None:
     return None
 
 
+def assign_step_instances(relations, components: dict | None = None) -> int:
+    """Write down the identity of every step of a repeated component.
+
+    A step is a *use* of a component, so the same component can be used twice.
+    Two such uses are byte-identical relations until one of them is configured,
+    and a store cannot tell identical entries apart -- the second was dropped
+    on the way in, which is what made "add this component again" impossible
+    even though every layer below supports it.
+
+    So the identity is written rather than inferred: the same id
+    `instances_of` derives, stored as `instance` metadata, for every relation
+    of a component that appears more than once and does not already carry one
+    (in the metadata, or in a `component~step` key a store round-trip
+    qualified). A component used once is left alone -- its key is unambiguous,
+    and writing metadata on every save would make every save a change.
+
+    Returns how many were assigned. Mutates the relations in place, which is
+    what the pre-crud hook needs: the document it is handed is the one that
+    gets written.
+    """
+    steps = [
+        relation
+        for relation in relations or []
+        if relation.get("type") == PROCESSOR_RELATION and relation.get("key")
+    ]
+    repeated = {
+        component
+        for component in (split_component_key(r["key"])[0] for r in steps)
+        if [split_component_key(r["key"])[0] for r in steps].count(component) > 1
+    }
+    if not repeated:
+        return 0
+
+    assigned = 0
+    for relation, instance in zip(
+        steps, (i.id for i in instances_of({"relations": steps}, components))
+    ):
+        component_id, from_key = split_component_key(relation["key"])
+        if component_id not in repeated or from_key or instance_id_of(relation):
+            continue
+        relation.setdefault("metadata", []).append(
+            {"key": INSTANCE_FIELD, "value": instance}
+        )
+        assigned += 1
+    return assigned
+
+
 def instances_of(pipeline, components: dict | None = None) -> list[Instance]:
     """Every step of a pipeline, in relation order, each with an id of its own.
 

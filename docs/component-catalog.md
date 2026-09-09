@@ -78,6 +78,25 @@ a downstream component can be checked against. The ownership check asks about
 both types, since the question is whether anything outside Elody's graphs
 already describes this thing, not what it is.
 
+## A component nothing installs asks for no runner
+
+A `dcat:PipelineComponent` is not necessarily an RDF-Connect processor. Elody's
+own alert visualisation is a step of the pipeline — its input contract is what a
+connection into it is checked against — but there is nothing to install and
+nothing to start: it reads the alerts out of the store the pipeline writes to
+([alert-component.md](alert-component.md)). The semantic.works services and the
+LDIO components in the demo catalog are the same kind of thing.
+
+So the description follows what the catalog entry declares. An entry with no
+`rdfc:*ImplementationOf` and no deployment coordinates is **not runnable**, and
+its description carries neither an implementation predicate nor
+`dct:requires <runner>`; what it does carry is the `dcterms:requires` the entry
+itself states — the store it reads through, an orchestrator of its own
+framework. The alternative was to keep defaulting to `rdfc:NodeRunner`, which
+tells the generator to start a Node processor that does not exist: a pipeline
+that either fails to come up or comes up doing nothing. Runners are still
+declared for the components that actually ask for one.
+
 ## One graph per component
 
 The same reasoning as one graph per pipeline definition
@@ -120,11 +139,62 @@ agreed with Thomas:
   toolchain catalog is authoritative for the components it carries; Elody adds
   only what it lacks.
 
+  *Every* base Elody writes is excluded, not just the catalog one. A published
+  definition carries the catalog fragment, so the pipeline-definition graphs
+  describe components too — and asking only about `CATALOG_GRAPH` made Elody's
+  own definitions answer this question about Elody's own components: after the
+  first pipeline save the component looked like the toolchain's, publishing
+  stopped, and the earlier description was withdrawn. It was silent and
+  order-dependent (whichever pipeline was saved first decided which components
+  stayed in the catalog), which is why it is worth spelling out here rather
+  than only in the code.
+
 The check needs a query endpoint (`CATALOG_SPARQL_ENDPOINT`, defaulting to
 `SPARQL_ENDPOINT`). Without one, Elody publishes and says so in the log: the
 failure modes are not symmetric — a second description in a graph of its own is
 a duplicate a consumer can see and we can withdraw, while a component the
 catalog does not describe is a pipeline that does not compile.
+
+## Catalog membership
+
+A component description is not only "here is a component" — it says which
+catalog the component belongs to:
+
+```turtle
+<https://elody.eu/catalog#ElodyCatalog> a tcs:Catalog ;
+    dcat:resource demo:ThresholdMonitorCm .
+```
+
+This is not decoration. The toolchain's application profile carries
+`tcs:SpecializedComponentIsCatalogedShape`, which requires the component a step
+names through `prov:specializationOf` to be a `dcat:resource` of some
+`tcs:Catalog`. A description that declares only `a tcs:PipelineComponent` is a
+component in no catalog at all, and a definition built on it violates the
+profile on **every** Elody-only step — the difference between a definition the
+generator compiles and one it rejects. It is emitted by the shared serializer,
+so the published graph and the export fragment carry it identically.
+
+The catalog is **Elody's own**, not one of the toolchain's, and that follows
+from the ownership rule above rather than being a separate choice: adding
+resources to a `tcs:Catalog` the toolchain owns would break editorial ownership
+from the inside, leaving a consumer unable to tell which catalog claims a
+component — which is the question precedence is decided on. Because the
+per-component graphs name the catalog by IRI rather than by blank node, they
+union into one catalog with many members, which is what a consumer querying
+`?catalog dcat:resource ?component` relies on.
+
+`CATALOG_IRI` overrides it, for the case the demonstrator settles on one shared
+catalog subject across its services.
+
+**Components only, and datasets deliberately not.** The same application profile
+carries `tcs:CatalogShape`: *every* `dcat:resource` of a `tcs:Catalog` must be a
+`tcs:PipelineComponent`. A dataset is not one — the generator cannot start it as
+a step — so listing it would trade the violation the registration clears for a
+new one. A dataset stays discoverable in the catalog graph by its own
+`a dcat:Dataset`, which is what a DCAT consumer looks for anyway. Runners are
+left out for a different reason: one is emitted because a component requires it,
+nothing specialises a runner, and the toolchain's catalog carries the runners
+itself, so listing it here would be an ownership claim with nothing behind it.
 
 ## When it is published
 
@@ -223,6 +293,8 @@ CATALOG_GSP_ENDPOINT      Graph Store Protocol endpoint  (→ PIPELINE_GSP_ENDPO
 CATALOG_SPARQL_ENDPOINT   query endpoint for the ownership check  (→ SPARQL_ENDPOINT)
 CATALOG_STORE_USER        Basic-auth credentials for the write  (→ PIPELINE_STORE_USER)
 CATALOG_STORE_PASSWORD                                          (→ PIPELINE_STORE_PASSWORD)
+CATALOG_IRI               the tcs:Catalog components are registered in
+                          (https://elody.eu/catalog#ElodyCatalog)
 CATALOG_PUBLISH_PAGES     pages of 20 components one sweep covers (5)
 CATALOG_IMPORT_BASE       base the relative owl:imports resolve against
 DEFINITION_INCLUDE_CATALOG  whether a downloaded definition carries the fragment (true)
@@ -261,3 +333,14 @@ graphs Elody publishes, introduces no application-profile violation the shipped
 toolchain catalog does not already have. It runs against a real
 toolchain-specification checkout (`TOOLCHAIN_SPECIFICATION_PATH`) and is skipped
 without one.
+
+The checkout is cloned by `task clone-repos` (it is in the client's
+`repositories.txt`) and bind-mounted read-only at `/opt/toolchain-specification`,
+which is where `TOOLCHAIN_SPECIFICATION_PATH` points in `.env.dist`. The gate
+also needs the generator's own dependencies (`rdfine`, `compilers`) importable
+in the collection-api container; they are not in the image, so they have to be
+installed there before the class stops skipping. Note that upstream moves: the
+2026-08-24 check found all eight of these tests failing against HEAD, one cause
+being the cataloguing shape this page's *Catalog membership* section answers,
+the other an `rdfine` SPARQL-compaction bug that is not ours
+([toolchain-open-questions.md](toolchain-open-questions.md) §6).

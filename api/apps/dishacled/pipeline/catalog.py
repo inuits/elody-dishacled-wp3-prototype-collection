@@ -34,7 +34,9 @@ Consumers reach them the way they reach definitions:
   triple written by the toolchain catalog cannot be replaced or removed by a
   write from here whatever happens.
 * *Editorially* -- before publishing, Elody asks whether the component is
-  already described anywhere outside its own graphs, and skips it if it is.
+  already described anywhere outside its own graphs -- the catalog graphs *and*
+  the pipeline-definition graphs, since a definition carries the catalog
+  fragment -- and skips it if it is.
   The toolchain catalog is authoritative for the components it carries; Elody
   adds only what it lacks. A component that becomes described there later is
   withdrawn from Elody's graph on the next publish, so the duplicate does not
@@ -103,6 +105,12 @@ WITHDRAWN = "withdrawn"
 # A dataset is described as a `dcat:Dataset` rather than as a component, so the
 # check has to ask about both -- the point is whether anything outside Elody's
 # graphs already describes this thing, not what it is.
+#
+# `%(exclusions)s` is one `!STRSTARTS` per base Elody writes, and *every* one of
+# them has to be there. A published definition carries the catalog fragment
+# (`DEFINITION_INCLUDE_CATALOG`), so the pipeline-definition graphs describe
+# components as well -- excluding only the catalog base made Elody's own
+# definitions answer this question about it.
 ASK_DESCRIBED_ELSEWHERE = """\
 PREFIX tcs: <https://w3id.org/toolchain#>
 PREFIX dcat: <http://www.w3.org/ns/dcat#>
@@ -110,7 +118,7 @@ ASK {
   VALUES ?type { tcs:PipelineComponent dcat:Dataset }
   {
     GRAPH ?g { <%(component)s> a ?type }
-    FILTER(!STRSTARTS(STR(?g), "%(base)s"))
+    FILTER(%(exclusions)s)
   } UNION {
     <%(component)s> a ?type
   }
@@ -136,6 +144,18 @@ def _query_endpoint() -> str:
 
 def _graph_base() -> str:
     return getenv("CATALOG_GRAPH", "").strip().rstrip("/")
+
+
+def _own_graph_bases() -> tuple[str, ...]:
+    """Every named-graph base Elody writes descriptions into.
+
+    The catalog graphs, and the pipeline-definition graphs -- a definition
+    carries the catalog fragment, so it describes components too. Read from the
+    environment here rather than imported from `publication`, which imports
+    this module.
+    """
+    bases = [_graph_base(), getenv("PIPELINE_GRAPH", "").strip().rstrip("/")]
+    return tuple(dict.fromkeys(base for base in bases if base))
 
 
 def _credentials():
@@ -321,13 +341,15 @@ def is_described_elsewhere(component_iri) -> bool:
     not describe is a pipeline that does not compile.
     """
     endpoint = _query_endpoint()
-    base = _graph_base()
-    if not endpoint or not base or not component_iri:
+    bases = _own_graph_bases()
+    if not endpoint or not bases or not component_iri:
         return False
 
     query = ASK_DESCRIBED_ELSEWHERE % {
         "component": str(component_iri),
-        "base": f"{base}/",
+        "exclusions": " && ".join(
+            f'!STRSTARTS(STR(?g), "{base}/")' for base in bases
+        ),
     }
     try:
         response = requests.post(

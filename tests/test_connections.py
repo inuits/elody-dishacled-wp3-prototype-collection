@@ -345,7 +345,32 @@ class TestConnectionsForPipeline:
             ]
         )
         connection = connections_for_pipeline(pipeline, COMPONENTS)[0]
-        assert connection.channel == "http-poller-cm-output-to-threshold-monitor-cm-input"
+        assert connection.channel == "http-poller-cm-output-channel"
+
+    def test_the_derived_name_is_the_producer_s_and_not_the_pair_s(self):
+        """One output port, one channel, however many consumers read it.
+
+        The name used to carry both ends. Connecting a second consumer then
+        renamed the producer's channel and orphaned the first consumer on the
+        next store round-trip, so `channel_name_between` names the producing
+        step and its port only.
+        """
+        pipeline = make_pipeline(
+            [
+                processor_relation("local--http-poller-cm"),
+                processor_relation(
+                    "local--threshold-monitor-cm",
+                    connection_metadata("input", "local--http-poller-cm|output"),
+                ),
+                processor_relation(
+                    "local--threshold-monitor-cm-2",
+                    connection_metadata("input", "local--http-poller-cm|output"),
+                ),
+            ]
+        )
+        components = {**COMPONENTS, "local--threshold-monitor-cm-2": MONITOR_CM}
+        channels = {c.channel for c in connections_for_pipeline(pipeline, components)}
+        assert channels == {"http-poller-cm-output-channel"}
 
     def test_an_explicit_channel_is_kept(self):
         pipeline = make_pipeline(
@@ -544,11 +569,27 @@ class TestBundledCatalogComponents:
         source = LocalComponentSource()
         return {d["_id"]: d for d in source.list_documents()}
 
-    def test_every_demo_service_has_an_output_port(self, components):
+    def test_every_producer_in_the_catalog_has_an_output_port(self, components):
+        """A component that declares an output shape must be connectable.
+
+        Not every component is a producer: a sink -- Elody's alert
+        visualisation, a logger -- declares an input shape and no output, and
+        an output port on it would offer a step nothing can follow.
+        """
         for identifier, document in components.items():
-            if document["data"].get("componentKind") != "component":
+            data = document["data"]
+            if data.get("componentKind") != "component":
+                continue
+            if not data.get("outputShape"):
                 continue
             assert output_ports(ports_for_component(document)), identifier
+
+    def test_a_sink_has_an_input_port_and_no_output_port(self, components):
+        dashboard = components["local--alert-visualisation"]
+        assert [p.name for p in input_ports(ports_for_component(dashboard))] == [
+            "alerts"
+        ]
+        assert output_ports(ports_for_component(dashboard)) == []
 
     def test_the_dataset_has_an_output_port_and_no_input_port(self, components):
         dataset = components["local--sensor-feed-cm"]

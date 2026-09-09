@@ -49,6 +49,24 @@ INSTALLERS = (
     ("http://example.org/example/pip", "pip install", ""),
 )
 XSD_STRING = URIRef("http://www.w3.org/2001/XMLSchema#string")
+# Not a real XSD datatype, but what the RDF-Connect catalogs use to say "this
+# parameter is an IRI": `sdsify`'s typeFilter and streamId, the threshold
+# monitor's creator and path. It stays a *typed literal* on the way out, which
+# is both what the toolchain's application profile requires ("Value is not
+# Literal with datatype xsd:iri" is a violation it raises on an actual IRI) and
+# what the orchestrator reads -- it maps the datatype to JSON-LD `@id`, so the
+# literal's lexical form becomes the id. Verified both ways by running the same
+# pipeline with each spelling: the monitor starts and alerts arrive either way.
+XSD_IRI = URIRef("http://www.w3.org/2001/XMLSchema#iri")
+XSD_IRI_NOTE = """\
+`xsd:iri` is not a real datatype. It is how the RDF-Connect processors say "an
+IRI" (`sdsify`'s typeFilter and streamId, the threshold monitor's creator and
+path), and the toolchain's harvested catalog spells the same thing out as
+`sh:nodeKind sh:IRI ; tcs:upstreamDatatype xsd:iri` -- so an IRI node is what a
+config value has to be, and its own validation report says so
+("Value is not of Node Kind sh:IRI"). The orchestrator agrees: it maps the
+datatype to JSON-LD `@id`.
+"""
 
 CHANNEL_CLASSES = {RDFC.Reader, RDFC.Writer, RDFC.Channel}
 
@@ -165,6 +183,7 @@ class _ShapeIndex:
             properties[str(name)] = {
                 "path": path,
                 "datatype": g.value(prop_node, SH.datatype),
+                "nodeKind": g.value(prop_node, SH.nodeKind),
                 "class": class_ref,
                 "nested": nested,
             }
@@ -216,6 +235,10 @@ def shape_index_for_shape_node(graph, shape_node, shapes_by_class=None):
     )
 
 
+def _is_iri_valued(binding) -> bool:
+    return binding.get("datatype") == XSD_IRI or binding.get("nodeKind") == SH.IRI
+
+
 def emit_config_values(g, subject, shape, values, base_uri, channels):
     """Emit one shape's config values onto `subject`, recursing into nested nodes.
 
@@ -236,6 +259,13 @@ def emit_config_values(g, subject, shape, values, base_uri, channels):
             emit_config_values(
                 g, nested_node, binding["nested"], value, base_uri, channels
             )
+            if binding["class"] is not None:
+                # The shape says the value has to be of this class
+                # (`sh:class rdfc:IngestConfig`), and an untyped blank node is
+                # a violation the toolchain's profile reports as "Value does
+                # not have class rdfc:IngestConfig". It also tells the runner
+                # which shape to read the nested config with.
+                g.add((nested_node, RDF.type, binding["class"]))
             # only attach if the nested node carries any triples
             if next(g.predicate_objects(nested_node), None) is not None:
                 g.add((subject, binding["path"], nested_node))
@@ -248,6 +278,9 @@ def emit_config_values(g, subject, shape, values, base_uri, channels):
             channel_uri = URIRef(base_uri + _slugify(value))
             g.add((subject, binding["path"], channel_uri))
             channels.add(channel_uri)
+        elif _is_iri_valued(binding):
+            # see XSD_IRI_NOTE
+            g.add((subject, binding["path"], URIRef(str(value))))
         else:
             datatype = binding["datatype"]
             if datatype == XSD_STRING:
@@ -321,8 +354,12 @@ class PipelineTtlSerializer:
 
             # A dataset is a source of data, not an implementation, so it is
             # emitted as a stage that can be wired but is never handed to a
-            # runner to instantiate.
-            if (processor.get("data") or {}).get("componentKind") != "dataset":
+            # runner to instantiate. The same holds for a component nothing
+            # installs (`runnable` in shacl/contracts.py) -- Elody's alert
+            # visualisation reads the store the pipeline writes to, so it is a
+            # stage of the chain, but no runner can start it.
+            is_dataset = data.get("componentKind") == "dataset"
+            if not is_dataset and data.get("runnable") is not False:
                 runner = RUNTIME_TO_RUNNER.get(
                     _get_metadata_value(processor, "runtime"), RDFC.NodeRunner
                 )

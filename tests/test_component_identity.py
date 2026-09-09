@@ -378,8 +378,10 @@ class TestFormAndExportAgree:
             pipeline, {reader["_id"]: reader, sub["_id"]: sub}
         )
         assert "rdfc:GlobRead" in ttl and "rdfc:Envsub" in ttl
-        # and the connection between them binds one channel to both ends
-        assert ttl.count("globread-writer-to-envsub-reader") >= 3
+        # and the connection between them binds one channel to both ends: the
+        # producing step and its port name it (`channel_name_between`), so it
+        # appears on the writer, on the reader and in its own declaration
+        assert ttl.count("globread-writer-channel") >= 3
 
 
 class TestExplicitTargetClass:

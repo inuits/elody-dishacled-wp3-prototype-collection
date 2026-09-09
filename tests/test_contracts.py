@@ -360,6 +360,24 @@ class TestBundledContractsFixture:
     CM_SHAPE = "https://dishacled.github.io/demo#MeasurementsInCmShape"
     MM_SHAPE = "https://dishacled.github.io/demo#MeasurementsInMmShape"
 
+    # The per-unit demo chain the cm/mm story is told with. Named rather than
+    # counted: the catalog also carries a local copy of the demonstrator's own
+    # catalogs (LDIO and semantic.works components), Elody's alert
+    # visualisation and the alert monitors, and those are described to
+    # different standards on purpose -- an LDIO component has no shapes here,
+    # a semantic.works service has no package, a dashboard has no output. A
+    # count over everything says nothing about any of them.
+    DEMO_CHAIN = (
+        "https://dishacled.github.io/demo#HttpPollerCm",
+        "https://dishacled.github.io/demo#HttpPollerMm",
+        "https://dishacled.github.io/demo#ThresholdMonitorCm",
+        "https://dishacled.github.io/demo#ThresholdMonitorMm",
+    )
+    DEMO_DATASETS = (
+        "https://dishacled.github.io/demo#SensorFeedCm",
+        "https://dishacled.github.io/demo#AlertStore",
+    )
+
     def catalog(self):
         return ContractCatalog.from_file(DEFAULT_CONTRACTS_PATH)
 
@@ -377,28 +395,44 @@ class TestBundledContractsFixture:
         assert DEFAULT_CONTRACTS_PATH.exists()
         assert len(self.catalog().all()) > 0
 
-    def test_four_components_and_two_datasets(self):
-        entries = self.hosted()
-        assert len([c for c in entries if c.kind == "component"]) == 4
-        assert len([c for c in entries if c.kind == "dataset"]) == 2
+    def test_the_demo_chain_and_its_datasets_are_all_there(self):
+        entries = {c.iri: c for c in self.hosted()}
+        for iri in self.DEMO_CHAIN:
+            assert entries[iri].kind == "component", iri
+        for iri in self.DEMO_DATASETS:
+            assert entries[iri].kind == "dataset", iri
 
     def test_the_overlay_entries_name_the_repository_they_describe(self):
         overlays = [c for c in self.catalog().all() if c.landing_page]
         assert {c.iri for c in overlays} == {
-            "https://w3id.org/rdf-connect/threshold-monitor#ThresholdMonitorJs",
             "https://w3id.org/rdf-connect#SPARQLIngest",
             # deployment coordinates only: a jvm processor has no manifest for
             # them to be read off the repository (test_contract_deployment_only)
             "https://w3id.org/rdf-connect#RmlMapper",
         }
+        # The threshold monitor is deliberately not among them: discovery
+        # never returns its repository, so the catalog describes it in full
+        # (tests/test_alert_producer.py).
 
-    def test_every_component_has_config_input_and_output(self):
-        for c in self.hosted():
-            if c.kind != "component":
-                continue
-            assert c.config_shape is not None, c.iri
-            assert c.input_shape is not None, c.iri
-            assert c.output_shape is not None, c.iri
+    def test_every_component_of_the_demo_chain_is_fully_described(self):
+        entries = {c.iri: c for c in self.hosted()}
+        for iri in self.DEMO_CHAIN:
+            contract = entries[iri]
+            assert contract.config_shape is not None, iri
+            assert contract.input_shape is not None, iri
+            assert contract.output_shape is not None, iri
+
+    def test_a_component_with_no_output_shape_is_a_sink_on_purpose(self):
+        """The invariant above is about the chain, not about every entry.
+
+        Elody's alert visualisation renders alerts and emits nothing, so it
+        declares an input shape and no output -- see
+        tests/test_alert_component.py. Asserted here so "fully described"
+        cannot quietly grow to mean "has all three".
+        """
+        elody = self.catalog().get("https://elody.eu/components#AlertVisualisation")
+        assert elody.input_shape is not None
+        assert elody.output_shape is None
 
     def test_datasets_declare_output_only(self):
         datasets = [c for c in self.catalog().all() if c.kind == "dataset"]
@@ -439,12 +473,23 @@ class TestBundledContractsFixture:
         assert cm_unit.in_values == ["cm"]
         assert mm_unit.in_values == ["mm"]
 
-    def test_every_component_declares_a_processor_class_iri(self):
+    def test_every_processor_component_declares_a_processor_class_iri(self):
         # the join key against a GitHub-discovered processor
         for c in self.catalog().all():
-            if c.kind != "component":
+            if c.kind != "component" or not c.runnable:
                 continue
             assert component_iri_from_ttl(c.to_raw_ttl()) == c.iri
+
+    def test_a_component_nothing_installs_does_not_claim_to_be_a_processor(self):
+        """A step of the pipeline is not necessarily a runnable processor.
+
+        Elody's alert visualisation, a semantic.works service and an LDIO
+        component are all components with no implementation to start; saying
+        otherwise would offer the generator a step it cannot run.
+        """
+        elody = self.catalog().get("https://elody.eu/components#AlertVisualisation")
+        assert elody.runnable is False
+        assert component_iri_from_ttl(elody.to_raw_ttl()) is None
 
     def test_dataset_raw_ttl_does_not_claim_to_be_a_processor(self):
         dataset = next(c for c in self.catalog().all() if c.kind == "dataset")
@@ -562,12 +607,43 @@ class TestBundledDeploymentCoordinates:
     repository's own manifest keeps winning.
     """
 
+    # Catalog-only placeholders: pickable in the builder for the shape-guided
+    # suggestion demo, with no published package behind them (the PLACEHOLDER
+    # note in contracts.ttl). Publish one and shrink this set -- the test below
+    # fails when a member stops being a placeholder, so it cannot go stale
+    # silently.
+    PLACEHOLDERS = {
+        "https://dishacled.github.io/demo#AlertMonitorCm",
+        "https://dishacled.github.io/demo#AlertMonitorMm",
+    }
+
     def components(self):
+        """The components the generator would try to install.
+
+        A component it can start is one whose entry declares an
+        implementation; the rest of the catalog -- Elody's alert
+        visualisation, the semantic.works services, the LDIO components --
+        is deployed by other means or not at all (`runnable` in
+        shacl/contracts.py), so coordinates would say nothing about them.
+        """
         return [
             c
             for c in ContractCatalog.from_file(DEFAULT_CONTRACTS_PATH).all()
-            if c.kind == "component" and not c.landing_page
+            if c.kind == "component"
+            and not c.landing_page
+            and c.runnable
+            and c.iri not in self.PLACEHOLDERS
         ]
+
+    def test_the_placeholders_are_the_only_uninstallable_components(self):
+        catalog = ContractCatalog.from_file(DEFAULT_CONTRACTS_PATH)
+        for iri in self.PLACEHOLDERS:
+            contract = catalog.get(iri)
+            assert contract is not None, iri
+            assert contract.runnable, iri
+            assert not contract.deployment.packages, (
+                f"{iri} has coordinates now; take it out of PLACEHOLDERS"
+            )
 
     def test_every_component_declares_an_import(self):
         for contract in self.components():

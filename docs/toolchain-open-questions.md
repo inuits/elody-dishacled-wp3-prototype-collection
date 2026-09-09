@@ -84,6 +84,28 @@ catalog even by accident.
   live GitHub reading is fresher than a checked-in file — is defensible too.
   We would rather it were a decision than a default.
 
+* **Thomas / Koen — may Elody edit catalog members it does not own?** The
+  architecture diagram (`docs/drawio_image.png`) has the frontend UI service —
+  us — *"writes: updates on catalog members (edited by the user)"*, against one
+  triple store holding one dishacled catalog. As implemented Elody writes only
+  inside its own graphs and *skips* any component the toolchain catalog already
+  describes, so a user editing such a component in Elody's UI has nowhere for
+  that edit to go. Those two pictures cannot both be right. Either the UI edits
+  only Elody-contributed members (what we built), or the toolchain catalog is
+  editable through us and the structural guarantee has to be replaced by
+  something weaker — provenance per triple, say. This is the precedence question
+  above with a user attached to it, and it is the one we would most like
+  answered.
+
+**Also settled since:** an Elody component description now registers the
+component in a `tcs:Catalog` of its own
+(`<https://elody.eu/catalog#ElodyCatalog> dcat:resource <component>`, overridable
+with `CATALOG_IRI`). Upstream's `tcs:SpecializedComponentIsCatalogedShape`
+requires it of anything a step specialises, so without it every Elody-only step
+violated the application profile — see §6, this is one of the two reasons the
+gated generator tests broke against HEAD. If the demonstrator wants one shared
+catalog subject rather than one per contributor, that is one variable.
+
 **Not done, deliberately:** the definition export still ships the fragment by
 default. Elody reads its own pipelines back out of the store, and the reverse
 mapping needs the fragment's `dct:identifier` and config shape to do it, so
@@ -189,6 +211,164 @@ cannot visualise one as an addressable thing. Our fixture mints
 Note `ErrorShape` constrains properties, not node kind, so it accepts both
 forms — the shape will not settle this on its own.
 
+### New — one shape, two IRIs
+
+The demonstrator's own catalog declares the alert shape as `loket:ErrorShape`
+(`http://lblod.data.gift/shapes/loket-error-alert-service/ErrorShape`, in
+`catalogs/components/sw.ttl` on the `proposal` branch); Elody declares it under
+the IRI the processor publishes and lblod's consumer queries,
+`http://lblod.data.gift/shapes/ErrorShape`.
+
+They describe the same alert, but a connection is only valid when both ends
+name the shape *identically* — identity of the IRI is what makes an
+output/input pair comparable at all. So as things stand, a chain that crosses
+the boundary (our threshold monitor into their error-alert service, or their
+monitor into Elody's alert visualisation) validates only because the demo
+catalog carries both IRIs on the semantic.works entries as a local addition,
+and the hand-off in `docs/examples/demonstrator-elody.ttl` writes Elody's input
+shape with *their* IRI.
+
+**For Thomas / Koen:** which IRI is the one, and does the other become an
+`owl:sameAs` / a re-declaration? Our preference is the published one
+(`.../shapes/ErrorShape`): it is what the processor emitting the alerts
+declares, so it is the only one a consumer can discover without reading a
+DiSHACLed catalog first. Either answer is a find-and-replace on our side.
+See `docs/alert-component.md`.
+
+## 5b. Three files on the `proposal` branch do not parse
+
+Found while merging Elody's alert-visualisation component into the demonstrator
+catalog (`docs/alert-component.md`), against
+`DiSHACLed/demonstrator@proposal` (2768933, 2026-08-24). Each of these is a
+one-line fix, and each of them makes a whole catalog file unreadable to any RDF
+parser, so a validator run over the composed pipeline cannot include them:
+
+* `catalogs/components/custom.ttl:106` — `loket:ErrorShape` with no `@prefix
+  loket:`. It is the output shape of the threshold monitor, i.e. the one triple
+  the alert chain is validated on.
+* `catalogs/components/rdfc.ttl:22` — `dct:requires ... ;`, a literal `...`
+  placeholder in object position (also `owl:imports ...`).
+* `catalogs/data.ttl:31` — `dcat:mediaType iana:text/turtle`, where the local
+  name contains a `/`. It needs `<...>` or a longer prefix.
+
+Elody's local copy of these catalogs already carries the first two fixes (the
+prefix and the media-type IRI, in the "local demo copy" block of
+`shacl/catalog/contracts.ttl`) and skips `rdfc.ttl` altogether, which is why
+the suite here is green on them — they were never reported back. Worth a small
+PR on the branch, and it is a prerequisite for the "one pipeline definition
+that validates clean end to end" the demo wants.
+
+## 5c. No released orchestrator can start a processor with a path parameter
+
+Found by running the published threshold monitor against the local stack
+(`docs/alert-component.md`). `@rdfc/threshold-monitor-processor-ts` types its
+`tm:path` parameter `sh:class rdfl:PathLens`, which is the name `rdf-lens`
+actually defines (1.3.x: `cache[RDFL.PathLens] = ShaclPath`, and no `Path`).
+`@rdfc/orchestrator-js` registers `rdfl:CBD`, `rdfl:Path`, `rdfl:TypedExtract`
+and `rdfl:Context` — so a pipeline using that processor fails while the
+orchestrator is building its arguments:
+
+```
+Failed at property { clazz: 'https://w3id.org/rdf-lens/ontology#PathLens', found: [ … rdfl:Path … ] }
+TypeError: Cannot read properties of undefined (reading 'addToDocument')
+```
+
+Checked against every published orchestrator, 1.0.0 through 2.2.2: none of them
+registers `PathLens`. The fix is one line
+(`dtos[RDFL.PathLens] = new CBDDefinition(RDFL.PathLens)`), and it is not
+specific to the monitor — it affects any processor with a SHACL-path parameter.
+
+Two smaller findings from the same run, worth passing on with it:
+
+* a *sequence* path (`( sosa:hasResult qudt:numericValue )`) is rejected as
+  "Expected 1 or less objects for property tm:path", so only single-predicate
+  paths work in practice — a chain over the demonstrator's own sample needs a
+  mapping step to flatten the value onto the observation first;
+* `sdsify`'s `metadataOutput` needs a reader, or the pipeline hangs silently
+  before the first member reaches the monitor.
+
+**What the blank-node alert actually costs** (§5, "a defect in the alert
+output") is now measured rather than predicted: with the monitor writing alerts
+on blank nodes, Elody's alert listing reported `count: 21, results: 4` — the
+17 real alerts were in the store, counted, and unlistable. That was a defect on
+our side too (the engine paged by subject IRI; it now pages by the identifying
+property, so blank-node alerts list and open). What remains is that a blank
+node cannot be linked to or cited from outside Elody, which is the reason the
+processor should mint `<…/alerts/{uuid}>`.
+
+## 5d. Compiling an Elody definition: what the generator says
+
+The definition Elody exports now goes through the pipeline generator. It
+compiles — `docker-compose.yml`, `Dockerfile`, `package.json`,
+`pyproject.toml`, `pipeline.ttl`, `validation-report.ttl`, with the published
+`@rdfc/threshold-monitor-processor-ts` among the installed packages — and the
+validation report went from **8 violations to 3** as five defects on our side
+were fixed:
+
+* **Nested config nodes carried no class.** `rdfc:ingestConfig [ … ]` with no
+  `a rdfc:IngestConfig`, and the same for `sdsify`'s `metadataConfig` and
+  `HttpFetch`'s `options`. Reported as "Value does not have class
+  rdfc:IngestConfig".
+* **`dct:requires` pointed at a dataset.** Our alert visualisation required
+  `demo:AlertStore`, a `dcat:Dataset`; the profile allows only a
+  `tcs:PipelineComponent` or an `spdx:Package`.
+* **IRI-valued parameters.** `xsd:iri` is not a datatype — it is how the
+  RDF-Connect processors say "an IRI", and `catalog-rdfc.ttl` restates it as
+  `sh:nodeKind sh:IRI ; tcs:upstreamDatatype xsd:iri`. Elody wrote such values
+  as typed literals *and* restated the raw `sh:datatype xsd:iri` in its
+  fragment, so the report contradicted itself depending on which side you
+  looked at. Both sides now follow the harvester's convention. (Worth knowing:
+  the runner accepts either spelling — we ran the same pipeline both ways and
+  the monitor started and alerts arrived each time. It is the profile that
+  settles it.)
+* **Unbound namespaces.** `rdfine` compacts an IRI to a CURIE and interpolates
+  the result into SPARQL, so an IRI in a namespace the document does not bind
+  arrives bare and the query does not parse. That is arguably a defect there —
+  an unbracketed IRI in a query is never right — but the document is ours to
+  fix, and every namespace we emit is now bound. The same mechanism bites on
+  IRIs that *do* compact but not to a legal CURIE: our step IRIs became
+  `pipeline:<id>/step/<slug>`, a CURIE with slashes in it, so the step and
+  channel namespaces get prefixes of their own.
+* **A component that says nothing about being deployed.** The profile requires
+  every `tcs:PipelineComponent` to reach a `tcs:DockerComposeConfig` along
+  `dct:requires*`. Fair: a dashboard nobody deploys renders nothing. Elody's
+  entry now carries one, the way the demonstrator's semantic.works services
+  do, and the generated `docker-compose.yml` gains an `elody-dashboard`
+  service alongside `rdfc`.
+
+### What is left, and why it is a question rather than a fix
+
+```
+Cross-container channel has no EntryBoundaryComponent-typed reader step —
+no bridge component available in the catalog to insert.        (×2)
+Cross-container channel has no ExitBoundaryComponent-typed writer step —
+no bridge component available in the catalog to insert.        (×1)
+```
+
+Declaring Elody deployable puts it in its own container, so the channel from
+the threshold monitor to the dashboard now crosses a container boundary, and
+the profile wants a bridge inserted. But **there is no channel**: Elody reads
+the alerts out of the central store, which is the "implicit information flow"
+of `extensions.md` — the same relation the demonstrator's own scenario-a draws
+as a `tcs:Connection` between the monitor and `sw:loket-error-alert-service`,
+with no channel and no bridge.
+
+So the two spellings available to us each trip a different rule: with no
+`tcs:DockerComposeConfig` the component is "not deployable"; with one, the edge
+becomes a cross-container channel needing a bridge. Elody emits the generator's
+channel vocabulary (`tcs:readsFrom`/`tcs:writesTo`) because that is what the
+generator reads — which is §8's question in concrete form.
+
+**Questions for Thomas / Koen:**
+
+* How should a store-mediated consumer be written in the *generator's* input?
+  A `tcs:Connection` the compiler understands as implicit, an
+  `EntryBoundaryComponent` the store itself plays, or something else?
+* Is a component that is deployed but never instantiated by a runner expected
+  to appear in the generated `pipeline.ttl`? Ours does not (correctly, we
+  think: nothing starts it), so the generated project deploys the dashboard
+  and runs the RDF-Connect stages, and the two meet at the store.
+
 ## 6. Versioning
 
 The generator is consumed as a git checkout — no release, no tag, no published
@@ -228,3 +408,54 @@ run as emitted.
 
 **Question:** are these known? We can supply the exact pipeline.ttl before and
 after, and the orchestrator logs for both.
+
+## 8. Which pipeline form is the one an end user authors?
+
+Koen's proposal of 2026-08-24 (`DiSHACLed/demonstrator`,
+`pipelines/final-valid/scenario-a.ttl` + `extensions.md`) makes the *logical*
+pipeline definition the end-user-authored form and demotes thcarsten's bridged
+`pipeline_definition.ttl` — the file this export was written against — to a
+compiler pre-processing stage. Elody is exactly the tool that authors the
+end-user form, so if that lands, this is the form we publish
+(`docs/toolchain-publication.md`) and read back
+(`docs/pipeline-storage.md`), not the bridged one.
+
+Three deltas against what `definition.ttl` emits today:
+
+* **Connections replace channels.** A link becomes
+  `[ a tcs:Connection ; tcs:from <...> ; tcs:to <...> ]`; there are no
+  `tcs:Channel` subjects and no `tcs:readsFrom` / `tcs:writesTo` annotations.
+  This is *closer* to how Elody already models the pipeline than the current
+  export is: connections are authored consumer-side as
+  `connections.<port>.from`, and the channel is a derived name
+  (`channel_name_between`) the user may override. The current export
+  materialises that channel because the bridged form needs one; the logical
+  form would let us stop.
+* **Configs are wrapped.** `p-plan:hasInputVar [ a tcs:WrappedPipelineConfig ;
+  tcs:embedded [ ... ] ]` with a `wrappedConfigShape` / `unwrapConfig`
+  mechanism, against today's `tcs:PipelineConfig`. Not a rename: whatever
+  `unwrapConfig` is allowed to do is what decides whether Elody can keep
+  emitting a component's config verbatim under its own config shape.
+* **The catalog is split per framework** (`catalogs/components/*.ttl`).
+  Elody publishes one named graph per component under `CATALOG_GRAPH`
+  (§4), which is a store layout, not a file layout — but if "per framework"
+  is a *grouping* consumers query by, we need the framework on the component
+  description, and we do not emit one today.
+
+**Questions for Koen / Thomas:**
+
+* Is the logical form settled enough to retarget the serializer, or is it
+  still a proposal? It reads as one — `tcs:do` looks like a typo for
+  `tcs:to`, and the SHACL contracts are marked TODO.
+* Do the toolchain services (generator, validator, the CLI demo script) read
+  the logical form from the store, or the bridged form? If they read the
+  bridged form, Elody publishing the logical one means somebody has to run the
+  pre-processing stage between us and them, and it should be said where.
+* Is the bridged form still a supported *input*, i.e. does retargeting mean
+  emitting the logical form **instead of** or **as well as** today's?
+
+**What we are doing meanwhile:** nothing. Retargeting touches the export, the
+publisher, the store reader and their tests; doing it twice against a moving
+proposal costs more than waiting for one answer. The mapping itself is small —
+the entity model already carries connections, so it is the emitting side that
+changes, not what Elody stores.

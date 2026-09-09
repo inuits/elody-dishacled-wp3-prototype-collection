@@ -356,6 +356,30 @@ def _relativise(iri) -> str:
     return value
 
 
+def _declares_implementation(g: Graph, subject) -> bool:
+    """Whether the entry says a runtime implements this component.
+
+    `rdfc:jsImplementationOf rdfc:Processor` and its py/jvm siblings -- the
+    triple that makes a component an RDF-Connect processor a runner can start.
+    """
+    return any(
+        str(predicate).split("#")[-1].endswith("ImplementationOf")
+        for predicate in g.predicates(subject, RDFC.Processor)
+    )
+
+
+def _requires_for(g: Graph, subject) -> tuple[str, ...]:
+    """The components this one declares it needs, packages excluded."""
+    return tuple(
+        sorted(
+            str(required)
+            for required in g.objects(subject, DCT.requires)
+            if isinstance(required, URIRef)
+            and (required, RDF.type, SPDX.Package) not in g
+        )
+    )
+
+
 def _deployment_for(g: Graph, subject) -> Deployment:
     imports = tuple(sorted(_relativise(o) for o in g.objects(subject, OWL.imports)))
 
@@ -396,6 +420,27 @@ class ComponentContract:
     # adds shapes to something discoverable elsewhere (a GitHub repository),
     # unset when the catalog is the component's only home.
     landing_page: str | None = None
+    # What the component needs alongside itself, as the catalog declares it
+    # (`dcterms:requires` naming another component: a runner, an orchestrator,
+    # the triple store a service reads through). Packages are not here -- those
+    # are deployment coordinates.
+    requires: tuple[str, ...] = ()
+    # `tcs:config` nodes the catalog attaches to the component -- how it is
+    # deployed, as opposed to how it is configured. Carried as IRIs plus a
+    # self-contained sub-graph, the same pair a shape is carried as: the
+    # toolchain's application profile requires every component to reach a
+    # `tcs:DockerComposeConfig`, so a description that drops them describes a
+    # component the generator refuses to compile.
+    configs: tuple[str, ...] = ()
+    config_ttl: str = ""
+    # Whether anything can *start* this component. False for an entry that
+    # declares no implementation and has nothing to install: Elody's alert
+    # visualisation, a semantic.works service, an LDIO component -- things that
+    # are steps of a pipeline without being RDF-Connect processors. A
+    # description that claims a runner for one of those offers the generator a
+    # step it cannot start, which is the same reason a dataset is not published
+    # as a component at all.
+    runnable: bool = True
 
     @property
     def local_id(self) -> str:
@@ -410,6 +455,10 @@ class ComponentContract:
             "inputShape": self.input_shape.to_dict() if self.input_shape else None,
             "outputShape": self.output_shape.to_dict() if self.output_shape else None,
             "deployment": self.deployment.to_dict(),
+            "requires": list(self.requires),
+            "runnable": self.runnable,
+            "configs": list(self.configs),
+            "configTtl": self.config_ttl,
         }
 
     def to_raw_ttl(self) -> str:
@@ -426,8 +475,9 @@ class ComponentContract:
         graph.bind("rdfs", RDFS)
 
         subject = URIRef(self.iri)
-        if self.kind == "component":
-            # a dataset is a source of data, not a processor implementation
+        if self.kind == "component" and self.runnable:
+            # a dataset is a source of data, not a processor implementation,
+            # and neither is a component nothing installs (see `runnable`)
             graph.add((subject, RDFC.jsImplementationOf, RDFC.Processor))
         if self.label:
             graph.add((subject, RDFS.label, Literal(self.label)))
@@ -542,6 +592,14 @@ class ContractCatalog:
             is_dataset = any(
                 (subject, RDF.type, t) in g for t in DATASET_TYPES
             )
+            landing_page = _first_value(g, subject, (DCAT.landingPage,))
+            requires = _requires_for(g, subject)
+            configs = tuple(
+                sorted(str(node) for node in g.objects(subject, TCS.config))
+            )
+            config_graph = Graph()
+            for node in g.objects(subject, TCS.config):
+                config_graph += extract_shape_graph(g, node)
             contracts.append(
                 ComponentContract(
                     iri=str(subject),
@@ -552,7 +610,19 @@ class ContractCatalog:
                     input_shape=shapes["input"],
                     output_shape=shapes["output"],
                     deployment=deployment,
-                    landing_page=_first_value(g, subject, (DCAT.landingPage,)),
+                    landing_page=landing_page,
+                    requires=requires,
+                    configs=configs,
+                    config_ttl=(
+                        config_graph.serialize(format="turtle")
+                        if len(config_graph)
+                        else ""
+                    ),
+                    runnable=(
+                        _declares_implementation(g, subject)
+                        or bool(landing_page)
+                        or deployment != Deployment()
+                    ),
                 )
             )
         return contracts

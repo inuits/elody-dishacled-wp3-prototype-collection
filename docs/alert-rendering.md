@@ -7,7 +7,9 @@ frontend enumerates the alert's fields.
 
 This is the rendering half of "Elody for alert visualisations" (demonstrator
 Step 5). Ingestion is [`alert-ingestion.md`](alert-ingestion.md); the endpoint
-and sample data are [`alert-fixture.md`](alert-fixture.md).
+and sample data are [`alert-fixture.md`](alert-fixture.md). The dashboard is also a
+*component* of the pipeline that produces the alerts, with this shape as its
+input contract — [`alert-component.md`](alert-component.md).
 
 ## The path
 
