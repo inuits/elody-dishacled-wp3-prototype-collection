@@ -1,10 +1,12 @@
 from elody.object_configurations.elody_configuration import (
     ElodyConfiguration,
 )
+from object_configurations.relation_mirroring import RelationMirroring
 from elody.schemas import entity_schema
 
 
-class EntityConfiguration(ElodyConfiguration):
+# keeps has<X> / is<X>For mirrors, so SHACL UI inverse paths read and write from either entity
+class EntityConfiguration(RelationMirroring, ElodyConfiguration):
     SCHEMA_TYPE = "elody"
     SCHEMA_VERSION = 1
 
