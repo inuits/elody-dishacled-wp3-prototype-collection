@@ -1,8 +1,14 @@
 from elody.object_configurations.elody_configuration import (
     ElodyConfiguration,
 )
-from object_configurations.relation_mirroring import RelationMirroring
 from elody.schemas import entity_schema
+
+try:
+    from object_configurations.relation_mirroring import RelationMirroring
+except ImportError:  # collection-api without opt-in mirroring (inuits-dams-collection feat/shacl-ui)
+
+    class RelationMirroring:
+        """No mirroring: the configuration behaves as without the mixin."""
 
 
 # keeps has<X> / is<X>For mirrors, so SHACL UI inverse paths read and write from either entity
